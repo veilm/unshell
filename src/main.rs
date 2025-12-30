@@ -49,9 +49,10 @@ fn run_script(path: &str) -> io::Result<()> {
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
+    let mut state = ShellState::new();
     let mut ctx = ScriptContext {
         lines,
-        state: ShellState::new(),
+        state: &mut state,
     };
     ctx.execute()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
@@ -166,12 +167,30 @@ enum RunResult {
 
 fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResult, String> {
     let commands = split_on_pipes(segment);
-    let commands_len = commands.len();
     if commands.is_empty() {
         return Ok(RunResult::Success(true));
     }
 
+    let expanded_commands = build_pipeline_commands(&commands, state)?;
+
+    if expanded_commands.len() == 1 {
+        if expanded_commands[0].len() == 1 && expanded_commands[0][0] == "exit" {
+            return Ok(RunResult::Exit);
+        }
+        let success = execute_with_status(&expanded_commands[0]);
+        return Ok(RunResult::Success(success));
+    }
+
+    run_pipeline(expanded_commands).map(RunResult::Success)
+}
+
+fn build_pipeline_commands(
+    commands: &[String],
+    state: &mut ShellState,
+) -> Result<Vec<Vec<String>>, String> {
+    let commands_len = commands.len();
     let mut expanded_commands = Vec::new();
+
     for cmd in commands {
         let args = parse_args(cmd.trim())?;
         let expanded = expand_tokens(args, state)?;
@@ -181,24 +200,14 @@ fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResu
         }
         if remaining.is_empty() {
             if commands_len == 1 {
-                return Ok(RunResult::Success(true));
+                return Ok(Vec::new());
             }
             return Err("empty command in pipeline".into());
         }
-
-        if remaining.len() == 1 && remaining[0] == "exit" && commands_len == 1 {
-            return Ok(RunResult::Exit);
-        }
-
         expanded_commands.push(remaining.to_vec());
     }
 
-    if expanded_commands.len() == 1 {
-        let success = execute_with_status(&expanded_commands[0]);
-        return Ok(RunResult::Success(success));
-    }
-
-    run_pipeline(expanded_commands).map(RunResult::Success)
+    Ok(expanded_commands)
 }
 
 fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
@@ -246,6 +255,67 @@ fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
     }
 
     Ok(last_success)
+}
+
+fn run_pipeline_capture(commands: Vec<Vec<String>>) -> Result<String, String> {
+    if commands.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut children = Vec::new();
+    let mut prev_stdout: Option<std::process::ChildStdout> = None;
+    let last_index = commands.len() - 1;
+    let mut last_name = String::new();
+    let mut last_child = None;
+
+    for (idx, args) in commands.iter().enumerate() {
+        let mut cmd = Command::new(&args[0]);
+        cmd.args(&args[1..]);
+
+        if let Some(stdout) = prev_stdout.take() {
+            cmd.stdin(Stdio::from(stdout));
+        }
+
+        cmd.stdout(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
+
+        if idx < last_index {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
+            prev_stdout = Some(stdout);
+            children.push((args[0].clone(), child));
+        } else {
+            last_name = args[0].clone();
+            last_child = Some(child);
+        }
+    }
+
+    for (name, mut child) in children.into_iter() {
+        let status = child
+            .wait()
+            .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
+        if !status.success() {
+            report_status(&name, status);
+        }
+    }
+
+    let output = last_child
+        .ok_or_else(|| "missing final pipeline process".to_string())?
+        .wait_with_output()
+        .map_err(|err| format!("failed to wait for '{}': {err}", last_name))?;
+
+    if !output.status.success() {
+        report_status(&last_name, output.status);
+    }
+
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "pipeline output not utf-8".to_string())?;
+    Ok(text)
 }
 
 fn split_on_semicolons(line: &str) -> Vec<String> {
@@ -410,6 +480,29 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
 
     parts.push(current);
     parts
+}
+
+fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>)> {
+    let segments = split_on_pipes(line);
+    if segments.len() < 2 {
+        return None;
+    }
+    let mut foreach_index = None;
+    let mut foreach_var = String::new();
+
+    for (idx, segment) in segments.iter().enumerate() {
+        let args = parse_args(segment.trim()).ok()?;
+        if args.len() == 2 && args[0] == "foreach" {
+            foreach_index = Some(idx);
+            foreach_var = args[1].clone();
+            break;
+        }
+    }
+
+    let foreach_index = foreach_index?;
+    let before = segments[..foreach_index].to_vec();
+    let after = segments[foreach_index + 1..].to_vec();
+    Some((foreach_var, before, after))
 }
 
 fn parse_args(line: &str) -> Result<Vec<String>, String> {
@@ -828,9 +921,9 @@ fn trim_capture_output(output: Output) -> io::Result<String> {
     Ok(text)
 }
 
-struct ScriptContext {
+struct ScriptContext<'a> {
     lines: Vec<String>,
-    state: ShellState,
+    state: &'a mut ShellState,
 }
 
 struct BlockResult {
@@ -838,7 +931,7 @@ struct BlockResult {
     exit: bool,
 }
 
-impl ScriptContext {
+impl<'a> ScriptContext<'a> {
     fn execute(&mut self) -> Result<(), String> {
         let mut idx = 0;
         while idx < self.lines.len() {
@@ -873,6 +966,39 @@ impl ScriptContext {
 
             if indent > indent_level {
                 return Err(format!("unexpected indent on line {}", idx + 1));
+            }
+
+            if let Some((var_name, before, after)) = parse_foreach_line(trimmed) {
+                if !is_valid_var_name(&var_name) {
+                    return Err(format!(
+                        "invalid foreach variable '{}' on line {}",
+                        var_name,
+                        idx + 1
+                    ));
+                }
+
+                if !after.is_empty() {
+                    return Err("foreach must be the final pipeline stage".into());
+                }
+
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+
+                if should_execute {
+                    let commands = build_pipeline_commands(&before, self.state)?;
+                    let output = run_pipeline_capture(commands)?;
+                    for line in output.lines() {
+                        self.state.set_var(&var_name, line.to_string());
+                        let result = self.execute_block(block_start, indent_level + 1, true)?;
+                        if result.exit {
+                            return Ok(result);
+                        }
+                    }
+                }
+
+                idx = block_end;
+                continue;
             }
 
             if let Some(rest) = trimmed.strip_prefix("for ") {

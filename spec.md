@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** `foreach` control flow, newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for`/`foreach` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
+- **Next up:** newline trimming toggles and the expansion handler contract.
 
 ## Features
 
@@ -108,6 +108,7 @@ ls -1 | foreach file
     echo $file
 | grep ".txt"
 ```
+**Current implementation:** tab-indented `cmd | foreach name` blocks inside scripts must be the final stage in a pipeline. Each line of upstream stdout is bound to `name`.
 
 ### External Expansion Handlers
 **Difficulty:** Hard  
