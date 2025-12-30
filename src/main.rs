@@ -110,8 +110,12 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 }
             }
             '[' if !in_double && bracket_depth == 0 && current.is_empty() => {
-                bracket_depth = 1;
-                current.push(ch);
+                if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                    current.push(ch);
+                } else {
+                    bracket_depth = 1;
+                    current.push(ch);
+                }
             }
             '[' if bracket_depth > 0 => {
                 bracket_depth += 1;

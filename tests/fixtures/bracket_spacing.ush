@@ -1,0 +1,4 @@
+echo [pwd]
+echo [ pwd
+if [ -f /bin/sh ]
+	echo bracket_ok
