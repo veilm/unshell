@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, and `&&` chaining, and ships `cd`, `export`, `alias`, and `unalias` built-ins. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** newline trimming toggles and the expansion handler contract.
 
 ## Features
@@ -143,6 +143,7 @@ alias ll="ls -la"
 unalias ll
 cd /srv/www
 ```
+**Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and aliases expand once at command start.
 
 ## Ambiguities / Open Questions
 - **Error handling mode:** Should non-zero exit codes inside pipelines or blocks abort the script (akin to `set -e`) or only fail the current step?

@@ -1,0 +1,3 @@
+alias greet "echo hello"
+greet
+unalias missing

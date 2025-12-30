@@ -1,0 +1,11 @@
+pwd
+rm -rf -- -
+mkdir -- -
+cd -
+pwd
+rm -rf -- -
+cd ..
+cd tests
+pwd
+cd
+pwd

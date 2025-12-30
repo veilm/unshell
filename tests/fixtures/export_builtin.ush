@@ -1,0 +1,5 @@
+name=hi
+export name
+printenv name
+export FOO=bar
+printenv FOO

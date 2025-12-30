@@ -209,17 +209,27 @@ fn process_line(line: &str, state: &mut ShellState) -> bool {
 
 struct ShellState {
     vars: HashMap<String, String>,
+    aliases: HashMap<String, String>,
 }
 
 impl ShellState {
     fn new() -> Self {
         Self {
             vars: HashMap::new(),
+            aliases: HashMap::new(),
         }
     }
 
     fn set_var(&mut self, name: &str, value: String) {
         self.vars.insert(name.to_string(), value);
+    }
+
+    fn set_alias(&mut self, name: &str, value: String) {
+        self.aliases.insert(name.to_string(), value);
+    }
+
+    fn remove_alias(&mut self, name: &str) -> bool {
+        self.aliases.remove(name).is_some()
     }
 }
 
@@ -287,6 +297,14 @@ fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)>
         write_u32(&mut file, value.len() as u32)?;
         file.write_all(value.as_bytes())?;
     }
+    let alias_count = state.aliases.len() as u32;
+    write_u32(&mut file, alias_count)?;
+    for (name, value) in state.aliases.iter() {
+        write_u32(&mut file, name.len() as u32)?;
+        file.write_all(name.as_bytes())?;
+        write_u32(&mut file, value.len() as u32)?;
+        file.write_all(value.as_bytes())?;
+    }
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -308,6 +326,20 @@ fn read_locals_file(path: &Path) -> io::Result<ShellState> {
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals value not utf-8"))?;
         state.set_var(&name, value);
     }
+    let alias_count = read_u32(&mut file)?;
+    for _ in 0..alias_count {
+        let name_len = read_u32(&mut file)? as usize;
+        let mut name_buf = vec![0u8; name_len];
+        file.read_exact(&mut name_buf)?;
+        let value_len = read_u32(&mut file)? as usize;
+        let mut value_buf = vec![0u8; value_len];
+        file.read_exact(&mut value_buf)?;
+        let name = String::from_utf8(name_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias name not utf-8"))?;
+        let value = String::from_utf8(value_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias value not utf-8"))?;
+        state.set_alias(&name, value);
+    }
     Ok(state)
 }
 
@@ -325,6 +357,46 @@ fn split_assignments(tokens: &[String]) -> (Vec<(String, String)>, &[String]) {
     }
 
     (assignments, &tokens[idx..])
+}
+
+fn is_builtin(name: &str) -> bool {
+    matches!(name, "cd" | "export" | "alias" | "unalias")
+}
+
+fn is_valid_alias_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let first = match chars.next() {
+        Some(ch) => ch,
+        None => return false,
+    };
+
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+
+    for ch in chars {
+        if !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
+    if tokens.is_empty() {
+        return Ok(tokens);
+    }
+    if is_builtin(&tokens[0]) {
+        return Ok(tokens);
+    }
+    let alias_value = match state.aliases.get(&tokens[0]) {
+        Some(value) => value.clone(),
+        None => return Ok(tokens),
+    };
+    let mut alias_tokens = parse_args(&alias_value)?;
+    alias_tokens.extend_from_slice(&tokens[1..]);
+    Ok(alias_tokens)
 }
 
 fn parse_assignment(token: &str) -> Option<(String, String)> {
@@ -370,17 +442,114 @@ fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResu
         return Ok(RunResult::Success(true));
     }
 
-    let expanded_commands = build_pipeline_commands(&commands, state)?;
-
-    if expanded_commands.len() == 1 {
-        if expanded_commands[0].len() == 1 && expanded_commands[0][0] == "exit" {
+    if commands.len() == 1 {
+        let args = parse_args(commands[0].trim())?;
+        let args = apply_alias(args, state)?;
+        let expanded = expand_tokens(args, state)?;
+        let (assignments, remaining) = split_assignments(&expanded);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            return Ok(RunResult::Success(true));
+        }
+        if remaining.len() == 1 && remaining[0] == "exit" {
             return Ok(RunResult::Exit);
         }
-        let success = execute_with_status(&expanded_commands[0]);
+        if let Some(result) = run_builtin(&remaining, state)? {
+            return Ok(result);
+        }
+        let success = execute_with_status(remaining);
         return Ok(RunResult::Success(success));
     }
 
+    let expanded_commands = build_pipeline_commands(&commands, state)?;
+
     run_pipeline(expanded_commands).map(RunResult::Success)
+}
+
+fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
+    let name = args.first().map(String::as_str).unwrap_or("");
+    match name {
+        "cd" => {
+            if args.len() > 2 {
+                return Err("cd: too many arguments".into());
+            }
+            let target = if args.len() == 1 {
+                env::var("HOME").map_err(|_| "cd: HOME not set".to_string())?
+            } else {
+                args[1].clone()
+            };
+            env::set_current_dir(&target).map_err(|err| {
+                format!("cd: failed to change directory to '{target}': {err}")
+            })?;
+            let cwd = env::current_dir()
+                .map_err(|err| format!("cd: failed to read current directory: {err}"))?;
+            let cwd_str = cwd.to_string_lossy().to_string();
+            state.set_var("PWD", cwd_str.clone());
+            unsafe {
+                env::set_var("PWD", cwd_str);
+            }
+            Ok(Some(RunResult::Success(true)))
+        }
+        "export" => {
+            if args.len() == 1 {
+                return Err("export: missing arguments".into());
+            }
+            for item in &args[1..] {
+                if let Some((name, value)) = parse_assignment(item) {
+                    state.set_var(&name, value.clone());
+                    unsafe {
+                        env::set_var(&name, value);
+                    }
+                    continue;
+                }
+                if !is_valid_var_name(item) {
+                    return Err(format!("export: invalid name '{item}'"));
+                }
+                let value = state
+                    .vars
+                    .get(item)
+                    .cloned()
+                    .or_else(|| env::var(item).ok())
+                    .unwrap_or_default();
+                state.set_var(item, value.clone());
+                unsafe {
+                    env::set_var(item, value);
+                }
+            }
+            Ok(Some(RunResult::Success(true)))
+        }
+        "alias" => {
+            if args.len() == 1 {
+                for (name, value) in state.aliases.iter() {
+                    println!("alias {name} {value}");
+                }
+                return Ok(Some(RunResult::Success(true)));
+            }
+            if args.len() < 3 {
+                return Err("alias: missing value".into());
+            }
+            let alias_name = &args[1];
+            if !is_valid_alias_name(alias_name) {
+                return Err(format!("alias: invalid name '{alias_name}'"));
+            }
+            let value = args[2..].join(" ");
+            state.set_alias(alias_name, value);
+            Ok(Some(RunResult::Success(true)))
+        }
+        "unalias" => {
+            if args.len() != 2 {
+                return Err("unalias: expected exactly one name".into());
+            }
+            let alias_name = &args[1];
+            if !state.remove_alias(alias_name) {
+                return Err(format!("unalias: no such alias '{alias_name}'"));
+            }
+            Ok(Some(RunResult::Success(true)))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn build_pipeline_commands(
@@ -392,6 +561,7 @@ fn build_pipeline_commands(
 
     for cmd in commands {
         let args = parse_args(cmd.trim())?;
+        let args = apply_alias(args, state)?;
         let expanded = expand_tokens(args, state)?;
         let (assignments, remaining) = split_assignments(&expanded);
         for (name, value) in assignments {
@@ -453,6 +623,7 @@ fn build_pipeline_stages_from_segments(
         }
 
         let args = parse_args(trimmed)?;
+        let args = apply_alias(args, state)?;
         let expanded = expand_tokens(args, state)?;
         let (assignments, remaining) = split_assignments(&expanded);
         for (name, value) in assignments {
