@@ -172,28 +172,23 @@ fn trim_trailing_newline(text: &mut String) {
 }
 
 fn process_line(line: &str, state: &mut ShellState) -> bool {
+    let mut ctx = ScriptContext {
+        lines: vec![line.to_string()],
+        state,
+    };
+    match ctx.execute_with_exit() {
+        Ok(exit) => !exit,
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            true
+        }
+    }
+}
+
+fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return true;
-    }
-
-    if let Ok(expanded) = expand_aliases_in_line(trimmed, state) {
-        let use_expanded = expanded.starts_with("if ")
-            || expanded.starts_with("for ")
-            || parse_foreach_line(&expanded).is_some();
-        if use_expanded {
-            let mut ctx = ScriptContext {
-                lines: vec![expanded],
-                state,
-            };
-            match ctx.execute_with_exit() {
-                Ok(exit) => return !exit,
-                Err(err) => {
-                    eprintln!("unshell: {err}");
-                    return true;
-                }
-            }
-        }
     }
 
     let sequences = split_on_semicolons(trimmed);
@@ -1351,7 +1346,7 @@ fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), Strin
         if segment.trim().is_empty() {
             continue;
         }
-        if !process_line(&segment, state) {
+        if !process_line_raw(&segment, state) {
             return Err("exit not allowed in inline block".into());
         }
     }
@@ -2264,7 +2259,7 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
-            if should_execute && !process_line(&trimmed, &mut self.state) {
+            if should_execute && !process_line_raw(&trimmed, &mut self.state) {
                 return Ok(BlockResult {
                     next: idx + 1,
                     exit: true,

@@ -1,5 +1,5 @@
-alias base "echo base"
-alias wrap "base"
+alias base11037 "echo base"
+alias wrap "base11037"
 wrap
 set aliases.recursive false
 wrap
@@ -7,3 +7,5 @@ set aliases.recursive true
 wrap
 alias -g foo "[echo test]"
 echo foo
+alias bar "[echo test2]"
+echo bar
