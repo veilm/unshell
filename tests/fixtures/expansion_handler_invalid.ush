@@ -1,0 +1,3 @@
+set expansions.characters "{" on
+set expansions.handler python3 scripts/expansion_handler_invalid.py
+echo file{a,b}.txt

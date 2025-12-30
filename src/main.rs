@@ -1833,11 +1833,21 @@ fn run_expansion_handler(token: &str, state: &ShellState) -> Result<Vec<String>,
         .output()
         .map_err(|err| format!("failed to execute expansion handler: {err}"))?;
     if !output.status.success() {
+        let _ = io::stderr().write_all(&output.stderr);
+        if let Some(code) = output.status.code() {
+            return Err(format!("expansion handler failed with status {code}"));
+        }
         return Err("expansion handler failed".into());
+    }
+    if !output.stderr.is_empty() {
+        let _ = io::stderr().write_all(&output.stderr);
     }
     let text = String::from_utf8(output.stdout)
         .map_err(|_| "expansion handler output not utf-8".to_string())?;
-    parse_json_string_array(&text)
+    parse_json_string_array(&text).map_err(|err| {
+        let trimmed = text.trim_end_matches(&['\n', '\r'][..]);
+        format!("expansion handler output invalid JSON: {err}: {trimmed}")
+    })
 }
 
 fn parse_json_string_array(input: &str) -> Result<Vec<String>, String> {

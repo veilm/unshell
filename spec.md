@@ -125,7 +125,7 @@ echo foo@bar{.txt,.log}
 # -> shell calls: ush-expand --mode glob "foo@bar{.txt,.log}"
 # -> handler prints JSON array such as ["foo@bar.txt","foo@bar.log"]
 ```
-**Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of strings to splice into the argument list.
+**Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of strings to splice into the argument list; handler failures or invalid JSON abort the command.
 
 ### External String & Quoting Utilities
 **Difficulty:** Medium  
