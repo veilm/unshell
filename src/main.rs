@@ -330,6 +330,10 @@ fn expand_string_literal(body: &str, state: &ShellState) -> Result<Vec<String>, 
                 let value =
                     run_capture(&capture, state).map_err(|err| format!("capture failed: {err}"))?;
                 result.push_str(&value);
+            } else if matches!(chars.peek(), Some(next) if is_var_start(*next)) {
+                let name = read_var_name_iter(&mut chars);
+                let value = lookup_var(state, &name);
+                result.push_str(&value);
             } else {
                 result.push(ch);
             }
@@ -388,6 +392,27 @@ fn read_paren_capture_chars(chars: &[char], mut idx: usize) -> Option<(String, u
     }
 
     None
+}
+
+fn read_var_name_iter<I>(chars: &mut std::iter::Peekable<I>) -> String
+where
+    I: Iterator<Item = char>,
+{
+    let mut name = String::new();
+    if let Some(ch) = chars.next() {
+        name.push(ch);
+    }
+
+    while let Some(ch) = chars.peek() {
+        if is_var_char(*ch) {
+            name.push(*ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+
+    name
 }
 
 fn read_var_name(chars: &[char], start: usize) -> (String, usize) {

@@ -45,7 +45,7 @@ hash="sha256:[sha256sum Cargo.lock]"
 
 ### Double-Quoted Strings & Capture Interpolation
 **Difficulty:** Medium  
-Double quotes group tokens without splitting, allow escaping via `\"`, and support inline captures using `$[]` or `$()`. Anything else (including bare `[]`) remains literal inside strings. The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting.
+Double quotes group tokens without splitting, allow escaping via `\"`, and support inline captures using `$[]` or `$()` plus `$var` interpolation. Anything else (including bare `[]`) remains literal inside strings. The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting; `$var` expands to its full value without trimming.
 ```bash
 echo "hello $[echo world]" "$[pwd]"
 ```
