@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, and provides atomic variable assignment/expansion. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** `...` spread operator, `for`/`foreach` control flow, newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, and runs tab-indented `for` loops in scripts. Integration fixtures cover the current surface area (`cargo test`).
+- **Next up:** `foreach` control flow, newline trimming toggles, and the expansion handler contract.
 
 ## Features
 
@@ -95,6 +95,7 @@ if test -f config.toml {
 for server in ...[cat servers.list | quote]
     ssh $server uptime
 ```
+**Current implementation:** tab-indented `for name in ...` blocks inside scripts, reusing the existing tab-indented block execution model.
 
 ### Stream Loops: `foreach`
 **Difficulty:** Hard  

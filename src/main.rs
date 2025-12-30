@@ -601,6 +601,36 @@ impl ScriptContext {
                 return Err(format!("unexpected indent on line {}", idx + 1));
             }
 
+            if let Some(rest) = trimmed.strip_prefix("for ") {
+                let args = parse_args(rest)?;
+                if args.len() < 3 || args[1] != "in" {
+                    return Err(format!("invalid for syntax on line {}", idx + 1));
+                }
+
+                let var_name = &args[0];
+                if !is_valid_var_name(var_name) {
+                    return Err(format!("invalid for variable '{}' on line {}", var_name, idx + 1));
+                }
+
+                let list = expand_tokens(args[2..].to_vec(), &self.state)?;
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+
+                if should_execute {
+                    for value in list {
+                        self.state.set_var(var_name, value);
+                        let result = self.execute_block(block_start, indent_level + 1, true)?;
+                        if result.exit {
+                            return Ok(result);
+                        }
+                    }
+                }
+
+                idx = block_end;
+                continue;
+            }
+
             if let Some(rest) = trimmed.strip_prefix("if ") {
                 let condition = rest.trim();
                 let run_child = if should_execute {
@@ -650,6 +680,27 @@ impl ScriptContext {
                 expanded[0]
             )),
         }
+    }
+
+    fn find_block_end(&self, mut idx: usize, indent_level: usize) -> usize {
+        while idx < self.lines.len() {
+            let raw = &self.lines[idx];
+            let (indent, content) = split_indent(raw);
+            let trimmed = content.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                idx += 1;
+                continue;
+            }
+
+            if indent < indent_level {
+                break;
+            }
+
+            idx += 1;
+        }
+
+        idx
     }
 }
 

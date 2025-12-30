@@ -1,0 +1,6 @@
+items=[printf "%s" "a \"b c\" d"]
+for item in ...$items
+	printf "%s|" $item
+echo
+for item in one two
+	echo $item
