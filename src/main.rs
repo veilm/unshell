@@ -819,7 +819,7 @@ fn parse_foreach_line(
     for (idx, segment) in segments.iter().enumerate() {
         let brace = parse_brace_block(segment.trim());
         let (body, brace_block, brace_open, brace_tail) = match brace {
-            BraceParse::Inline { head, body } => (head, Some(body), false, None),
+            BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
             BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
             BraceParse::None { head } => (head, None, false, None),
         };
@@ -1321,11 +1321,15 @@ impl<'a> ScriptContext<'a> {
 
             if let Some(rest) = trimmed.strip_prefix("if ") {
                 let brace = parse_brace_block(rest);
-                let (condition, brace_block, brace_open, brace_tail) = match brace {
-                    BraceParse::Inline { head, body } => (head, Some(body), false, None),
-                    BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
-                    BraceParse::None { head } => (head, None, false, None),
-                };
+                let (condition, brace_block, brace_open, brace_tail, brace_inline_tail) =
+                    match brace {
+                        BraceParse::Inline { head, body, tail } => {
+                            (head, Some(body), false, None, tail)
+                        }
+                        BraceParse::Open { head, tail } => (head, None, true, Some(tail), None),
+                        BraceParse::None { head } => (head, None, false, None, None),
+                    };
+                let brace_inline_tail = brace_inline_tail;
                 let run_child = if should_execute {
                     self.evaluate_condition(condition.trim())?
                 } else {
@@ -1336,7 +1340,22 @@ impl<'a> ScriptContext<'a> {
                     if run_child {
                         execute_inline_block(&block, self.state)?;
                     }
-                    idx += 1;
+                    let (exit, next_idx, handled) = self.handle_else_chain_tail(
+                        brace_inline_tail,
+                        idx + 1,
+                        indent_level,
+                        should_execute && !run_child,
+                    )?;
+                    idx = next_idx;
+                    if exit {
+                        return Ok(BlockResult {
+                            next: idx,
+                            exit: true,
+                        });
+                    }
+                    if handled {
+                        continue;
+                    }
                     continue;
                 }
 
@@ -1477,7 +1496,7 @@ impl<'a> ScriptContext<'a> {
             if let Some(rest) = trimmed.strip_prefix("for ") {
                 let brace = parse_brace_block(rest);
                 let (body, brace_block, brace_open, brace_tail) = match brace {
-                    BraceParse::Inline { head, body } => (head, Some(body), false, None),
+                    BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
                     BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
                     BraceParse::None { head } => (head, None, false, None),
                 };
@@ -1655,10 +1674,10 @@ impl<'a> ScriptContext<'a> {
         is_elif: bool,
     ) -> Result<(bool, usize, bool), String> {
         let brace = parse_brace_block(rest);
-        let (condition, brace_block, brace_open, brace_tail) = match brace {
-            BraceParse::Inline { head, body } => (head, Some(body), false, None),
-            BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
-            BraceParse::None { head } => (head, None, false, None),
+        let (condition, brace_block, brace_open, brace_tail, brace_inline_tail) = match brace {
+            BraceParse::Inline { head, body, tail } => (head, Some(body), false, None, tail),
+            BraceParse::Open { head, tail } => (head, None, true, Some(tail), None),
+            BraceParse::None { head } => (head, None, false, None, None),
         };
 
         let run_child = if is_elif {
@@ -1675,6 +1694,14 @@ impl<'a> ScriptContext<'a> {
             if run_child {
                 execute_inline_block(&block, self.state)?;
                 return Ok((false, block_start, true));
+            }
+            if let Some(tail) = brace_inline_tail {
+                return self.handle_else_chain_tail(
+                    Some(tail),
+                    block_start,
+                    indent_level,
+                    should_execute && !run_child,
+                );
             }
             return self.handle_else_chain(block_start, indent_level, should_execute && !run_child);
         }

@@ -20,9 +20,7 @@ if false {
 if false
 else { echo 1 }
 
-# if false {pwd} else {
-# 	echo 2
-# }
+if false {pwd} else { echo 2 } 
 
 if false {
 	echo 3
@@ -34,3 +32,6 @@ if false {
 }
 else
 	echo 6
+
+if false { date } else
+	echo 7
