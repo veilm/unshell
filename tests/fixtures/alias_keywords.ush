@@ -1,0 +1,12 @@
+rm -rf /tmp/ush-alias-test
+mkdir -p /tmp/ush-alias-test
+alias ccd "cd /tmp/ush-alias-test"
+alias cond "if false { echo no } elif true { echo yes } else { echo never }"
+alias loop "for item in one two { echo $item }"
+alias fe "foreach item { echo $item }"
+ccd
+pwd
+cond
+loop
+printf '%s\n' a b | fe
+rm -rf /tmp/ush-alias-test

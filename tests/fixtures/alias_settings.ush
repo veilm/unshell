@@ -1,0 +1,9 @@
+alias base "echo base"
+alias wrap "base"
+wrap
+set aliases.recursive false
+wrap
+set aliases.recursive true
+wrap
+alias -g foo "[echo test]"
+echo foo

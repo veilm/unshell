@@ -177,6 +177,25 @@ fn process_line(line: &str, state: &mut ShellState) -> bool {
         return true;
     }
 
+    if let Ok(expanded) = expand_aliases_in_line(trimmed, state) {
+        let use_expanded = expanded.starts_with("if ")
+            || expanded.starts_with("for ")
+            || parse_foreach_line(&expanded).is_some();
+        if use_expanded {
+            let mut ctx = ScriptContext {
+                lines: vec![expanded],
+                state,
+            };
+            match ctx.execute_with_exit() {
+                Ok(exit) => return !exit,
+                Err(err) => {
+                    eprintln!("unshell: {err}");
+                    return true;
+                }
+            }
+        }
+    }
+
     let sequences = split_on_semicolons(trimmed);
     for sequence in sequences {
         let sequence = sequence.trim();
@@ -207,9 +226,19 @@ fn process_line(line: &str, state: &mut ShellState) -> bool {
     true
 }
 
+struct ShellOptions {
+    aliases_recursive: bool,
+}
+
+struct AliasEntry {
+    value: String,
+    global: bool,
+}
+
 struct ShellState {
     vars: HashMap<String, String>,
-    aliases: HashMap<String, String>,
+    aliases: HashMap<String, AliasEntry>,
+    options: ShellOptions,
 }
 
 impl ShellState {
@@ -217,6 +246,9 @@ impl ShellState {
         Self {
             vars: HashMap::new(),
             aliases: HashMap::new(),
+            options: ShellOptions {
+                aliases_recursive: true,
+            },
         }
     }
 
@@ -224,8 +256,14 @@ impl ShellState {
         self.vars.insert(name.to_string(), value);
     }
 
-    fn set_alias(&mut self, name: &str, value: String) {
-        self.aliases.insert(name.to_string(), value);
+    fn set_alias(&mut self, name: &str, value: String, global: bool) {
+        self.aliases.insert(
+            name.to_string(),
+            AliasEntry {
+                value,
+                global,
+            },
+        );
     }
 
     fn remove_alias(&mut self, name: &str) -> bool {
@@ -287,6 +325,16 @@ fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
     Ok(u32::from_le_bytes(buf))
 }
 
+fn write_bool<W: Write>(writer: &mut W, value: bool) -> io::Result<()> {
+    writer.write_all(&[if value { 1 } else { 0 }])
+}
+
+fn read_bool<R: Read>(reader: &mut R) -> io::Result<bool> {
+    let mut buf = [0u8; 1];
+    reader.read_exact(&mut buf)?;
+    Ok(buf[0] != 0)
+}
+
 fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
     let (path, mut file) = create_temp_file("locals")?;
     let count = state.vars.len() as u32;
@@ -302,9 +350,11 @@ fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)>
     for (name, value) in state.aliases.iter() {
         write_u32(&mut file, name.len() as u32)?;
         file.write_all(name.as_bytes())?;
-        write_u32(&mut file, value.len() as u32)?;
-        file.write_all(value.as_bytes())?;
+        write_u32(&mut file, value.value.len() as u32)?;
+        file.write_all(value.value.as_bytes())?;
+        write_bool(&mut file, value.global)?;
     }
+    write_bool(&mut file, state.options.aliases_recursive)?;
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -334,12 +384,14 @@ fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         let value_len = read_u32(&mut file)? as usize;
         let mut value_buf = vec![0u8; value_len];
         file.read_exact(&mut value_buf)?;
+        let global = read_bool(&mut file)?;
         let name = String::from_utf8(name_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias name not utf-8"))?;
         let value = String::from_utf8(value_buf)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias value not utf-8"))?;
-        state.set_alias(&name, value);
+        state.set_alias(&name, value, global);
     }
+    state.options.aliases_recursive = read_bool(&mut file)?;
     Ok(state)
 }
 
@@ -357,10 +409,6 @@ fn split_assignments(tokens: &[String]) -> (Vec<(String, String)>, &[String]) {
     }
 
     (assignments, &tokens[idx..])
-}
-
-fn is_builtin(name: &str) -> bool {
-    matches!(name, "cd" | "export" | "alias" | "unalias")
 }
 
 fn is_valid_alias_name(name: &str) -> bool {
@@ -383,20 +431,73 @@ fn is_valid_alias_name(name: &str) -> bool {
     true
 }
 
+fn is_quoted_token(token: &str) -> bool {
+    (token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2)
+        || (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
+}
+
+fn strip_quotes(token: &str) -> String {
+    if is_quoted_token(token) {
+        token[1..token.len() - 1].to_string()
+    } else {
+        token.to_string()
+    }
+}
+
 fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
     if tokens.is_empty() {
         return Ok(tokens);
     }
-    if is_builtin(&tokens[0]) {
-        return Ok(tokens);
+
+    let mut current = tokens;
+    let recursive = state.options.aliases_recursive;
+    let mut depth = 0;
+    loop {
+        let mut changed = false;
+        let mut next = Vec::new();
+
+        for (idx, token) in current.iter().enumerate() {
+            if is_quoted_token(token) {
+                next.push(token.clone());
+                continue;
+            }
+
+            if idx == 0 {
+                if let Some(alias) = state.aliases.get(token) {
+                    let alias_tokens = parse_args(&alias.value)?;
+                    next.extend(alias_tokens);
+                    changed = true;
+                    continue;
+                }
+            }
+
+            if let Some(alias) = state.aliases.get(token) {
+                if alias.global {
+                    let alias_tokens = parse_args(&alias.value)?;
+                    next.extend(alias_tokens);
+                    changed = true;
+                    continue;
+                }
+            }
+
+            next.push(token.clone());
+        }
+
+        if !changed {
+            return Ok(current);
+        }
+
+        if !recursive {
+            return Ok(next);
+        }
+
+        depth += 1;
+        if depth > 32 {
+            return Err("alias expansion exceeded recursion limit".into());
+        }
+
+        current = next;
     }
-    let alias_value = match state.aliases.get(&tokens[0]) {
-        Some(value) => value.clone(),
-        None => return Ok(tokens),
-    };
-    let mut alias_tokens = parse_args(&alias_value)?;
-    alias_tokens.extend_from_slice(&tokens[1..]);
-    Ok(alias_tokens)
 }
 
 fn parse_assignment(token: &str) -> Option<(String, String)> {
@@ -445,6 +546,11 @@ fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResu
     if commands.len() == 1 {
         let args = parse_args(commands[0].trim())?;
         let args = apply_alias(args, state)?;
+        if args.get(0).map(String::as_str) == Some("alias") {
+            if let Some(result) = run_alias_builtin_unexpanded(&args, state)? {
+                return Ok(result);
+            }
+        }
         let expanded = expand_tokens(args, state)?;
         let (assignments, remaining) = split_assignments(&expanded);
         for (name, value) in assignments {
@@ -520,24 +626,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             }
             Ok(Some(RunResult::Success(true)))
         }
-        "alias" => {
-            if args.len() == 1 {
-                for (name, value) in state.aliases.iter() {
-                    println!("alias {name} {value}");
-                }
-                return Ok(Some(RunResult::Success(true)));
-            }
-            if args.len() < 3 {
-                return Err("alias: missing value".into());
-            }
-            let alias_name = &args[1];
-            if !is_valid_alias_name(alias_name) {
-                return Err(format!("alias: invalid name '{alias_name}'"));
-            }
-            let value = args[2..].join(" ");
-            state.set_alias(alias_name, value);
-            Ok(Some(RunResult::Success(true)))
-        }
+        "alias" => Ok(None),
         "unalias" => {
             if args.len() != 2 {
                 return Err("unalias: expected exactly one name".into());
@@ -548,8 +637,67 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             }
             Ok(Some(RunResult::Success(true)))
         }
+        "set" => {
+            if args.len() != 3 {
+                return Err("set: expected KEY VALUE".into());
+            }
+            let key = &args[1];
+            let value = &args[2];
+            match key.as_str() {
+                "aliases.recursive" => {
+                    let enabled = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(
+                                "set: aliases.recursive expects 'true' or 'false'".into(),
+                            )
+                        }
+                    };
+                    state.options.aliases_recursive = enabled;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                _ => Err(format!("set: unknown option '{key}'")),
+            }
+        }
         _ => Ok(None),
     }
+}
+
+fn run_alias_builtin_unexpanded(
+    args: &[String],
+    state: &mut ShellState,
+) -> Result<Option<RunResult>, String> {
+    if args.len() == 1 {
+        for (name, value) in state.aliases.iter() {
+            if value.global {
+                println!("alias -g {name} {}", value.value);
+            } else {
+                println!("alias {name} {}", value.value);
+            }
+        }
+        return Ok(Some(RunResult::Success(true)));
+    }
+    let mut arg_idx = 1;
+    let mut global = false;
+    if args.get(arg_idx).map(String::as_str) == Some("-g") {
+        global = true;
+        arg_idx += 1;
+    }
+    if args.len() <= arg_idx + 1 {
+        return Err("alias: missing value".into());
+    }
+    let alias_name = &args[arg_idx];
+    if !is_valid_alias_name(alias_name) {
+        return Err(format!("alias: invalid name '{alias_name}'"));
+    }
+    let value_tokens: Vec<String> = args[arg_idx + 1..]
+        .iter()
+        .map(|token| strip_quotes(token))
+        .collect();
+    let value = value_tokens.join(" ");
+    state.set_alias(alias_name, value, global);
+    Ok(Some(RunResult::Success(true)))
 }
 
 fn build_pipeline_commands(
@@ -591,8 +739,12 @@ fn build_pipeline_stages_from_segments(
             return Err("empty command in pipeline".into());
         }
 
-        if trimmed.starts_with("foreach ") {
-            let brace = parse_brace_block(trimmed);
+        let tokens = parse_args(trimmed)?;
+        let tokens = apply_alias(tokens, state)?;
+        let segment_line = tokens.join(" ");
+
+        if segment_line.starts_with("foreach ") {
+            let brace = parse_brace_block(&segment_line);
             let (head, brace_block, brace_open, brace_tail) = match brace {
                 BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
                 BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
@@ -622,9 +774,7 @@ fn build_pipeline_stages_from_segments(
             }
         }
 
-        let args = parse_args(trimmed)?;
-        let args = apply_alias(args, state)?;
-        let expanded = expand_tokens(args, state)?;
+        let expanded = expand_tokens(tokens, state)?;
         let (assignments, remaining) = split_assignments(&expanded);
         for (name, value) in assignments {
             state.set_var(&name, value);
@@ -804,6 +954,24 @@ fn split_on_semicolons(line: &str) -> Vec<String> {
 
 fn split_on_pipes(line: &str) -> Vec<String> {
     split_by_char(line, '|')
+}
+
+fn expand_aliases_in_line(line: &str, state: &ShellState) -> Result<String, String> {
+    let segments = split_on_pipes(line);
+    if segments.len() <= 1 {
+        let tokens = parse_args(line)?;
+        let tokens = apply_alias(tokens, state)?;
+        return Ok(tokens.join(" "));
+    }
+
+    let mut expanded_segments = Vec::new();
+    for segment in segments {
+        let tokens = parse_args(segment.trim())?;
+        let tokens = apply_alias(tokens, state)?;
+        expanded_segments.push(tokens.join(" "));
+    }
+
+    Ok(expanded_segments.join(" | "))
 }
 
 fn append_pipeline_tail(after: &mut Vec<String>, tail: &str) -> Result<(), String> {
@@ -1831,6 +1999,12 @@ impl<'a> ScriptContext<'a> {
                 return Err("unexpected '}'".into());
             }
 
+            let expanded = expand_aliases_in_line(&trimmed, self.state)?;
+            let use_expanded = expanded.starts_with("if ")
+                || expanded.starts_with("for ")
+                || parse_foreach_line(&expanded).is_some();
+            let trimmed = if use_expanded { expanded } else { trimmed };
+
             if let Some(rest) = trimmed.strip_prefix("if ") {
                 let brace = parse_brace_block(rest);
                 let (condition, brace_block, brace_open, brace_tail, brace_inline_tail) =
@@ -2131,6 +2305,8 @@ impl<'a> ScriptContext<'a> {
                 return Err(format!("unexpected indent on line {}", idx + 1));
             }
 
+            let trimmed = expand_aliases_in_line(&trimmed, self.state)?;
+
             if let Some(rest) = trimmed.strip_prefix("elif ") {
                 handled = true;
                 let (exit, next_idx, done) =
@@ -2172,7 +2348,7 @@ impl<'a> ScriptContext<'a> {
         should_execute: bool,
     ) -> Result<(bool, usize, bool), String> {
         if let Some(tail) = tail_line {
-            let trimmed = tail.trim();
+            let trimmed = expand_aliases_in_line(tail.trim(), self.state)?;
             if trimmed.starts_with("elif ") {
                 let rest = trimmed.strip_prefix("elif ").unwrap_or("").trim();
                 return self.handle_else_line(rest, idx, indent_level, should_execute, true);

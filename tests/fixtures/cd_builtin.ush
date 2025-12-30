@@ -1,11 +1,12 @@
+base=/tmp/ush-cd-test
+rm -rf $base
+mkdir -p $base/-
+mkdir -p $base/home
+export HOME=$base/home
+cd $base/-
 pwd
-rm -rf -- -
-mkdir -- -
-cd -
-pwd
-rm -rf -- -
-cd ..
-cd tests
+cd $base
 pwd
 cd
 pwd
+rm -rf $base
