@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext scripts line-by-line (with `exit` handling), and ships integration fixtures validating current behavior.
-- **Next up:** argument parser that respects atomic variables/`...`, square-bracket captures (see failing `capture_substitution` fixture), control-flow keywords (`if`, `for`, `foreach`), newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext scripts line-by-line (with `exit` handling), runs square-bracket captures, and ships integration fixtures validating current behavior.
+- **Next up:** indentation/brace control flow (`if_block` fixture currently fails), argument parser that respects atomic variables/`...`, newline trimming toggles, and the expansion handler contract.
 
 ## Features
 
