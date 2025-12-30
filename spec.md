@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` binary builds via Cargo/Makefile, offers a simple REPL, and can execute plaintext scripts line-by-line with `ush path/to/script`.
-- **Next up:** argument parser that respects atomic variables/`...`, square-bracket captures, control-flow keywords (`if`, `for`, `foreach`), newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext scripts line-by-line (with `exit` handling), and ships integration fixtures validating current behavior.
+- **Next up:** argument parser that respects atomic variables/`...`, square-bracket captures (see failing `capture_substitution` fixture), control-flow keywords (`if`, `for`, `foreach`), newline trimming toggles, and the expansion handler contract.
 
 ## Features
 

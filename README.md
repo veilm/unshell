@@ -23,3 +23,9 @@ DESTDIR="$HOME/.local" make install  # user-local install without sudo
 ./target/release/ush                 # interactive prompt (temporary)
 ./target/release/ush path/to/script  # run a script file line-by-line
 ```
+
+## Testing
+
+```bash
+cargo test          # runs integration fixtures (capture substitution currently fails by design)
+```
