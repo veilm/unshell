@@ -1,1 +1,1 @@
-unshell: failed to execute 'cd': No such file or directory
+unshell: failed to execute 'cd': No such file or directory (os error 2)

@@ -27,5 +27,5 @@ DESTDIR="$HOME/.local" make install  # user-local install without sudo
 ## Testing
 
 ```bash
-cargo test          # runs integration fixtures (`if_block` currently fails until control flow lands)
+cargo test          # runs integration fixtures end-to-end
 ```

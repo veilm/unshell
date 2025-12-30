@@ -45,13 +45,11 @@ fn run_repl() {
 fn run_script(path: &str) -> io::Result<()> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    for raw_line in reader.lines() {
-        let line = raw_line?;
-        if !process_line(&line) {
-            break;
-        }
-    }
+    let mut ctx = ScriptContext { lines };
+    ctx.execute()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
     Ok(())
 }
@@ -183,6 +181,113 @@ fn trim_capture_output(output: Output) -> io::Result<String> {
     }
 
     Ok(text)
+}
+
+struct ScriptContext {
+    lines: Vec<String>,
+}
+
+struct BlockResult {
+    next: usize,
+    exit: bool,
+}
+
+impl ScriptContext {
+    fn execute(&mut self) -> Result<(), String> {
+        let mut idx = 0;
+        while idx < self.lines.len() {
+            let result = self.execute_block(idx, 0, true)?;
+            idx = result.next;
+            if result.exit {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn execute_block(
+        &mut self,
+        mut idx: usize,
+        indent_level: usize,
+        should_execute: bool,
+    ) -> Result<BlockResult, String> {
+        while idx < self.lines.len() {
+            let raw = &self.lines[idx];
+            let (indent, content) = split_indent(raw);
+            let trimmed = content.trim();
+
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                idx += 1;
+                continue;
+            }
+
+            if indent < indent_level {
+                break;
+            }
+
+            if indent > indent_level {
+                return Err(format!("unexpected indent on line {}", idx + 1));
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("if ") {
+                let condition = rest.trim();
+                let run_child = if should_execute {
+                    self.evaluate_condition(condition)?
+                } else {
+                    false
+                };
+
+                idx += 1;
+                let result =
+                    self.execute_block(idx, indent_level + 1, should_execute && run_child)?;
+                idx = result.next;
+
+                if result.exit {
+                    return Ok(result);
+                }
+                continue;
+            }
+
+            if should_execute && !process_line(trimmed) {
+                return Ok(BlockResult {
+                    next: idx + 1,
+                    exit: true,
+                });
+            }
+
+            idx += 1;
+        }
+
+        Ok(BlockResult {
+            next: idx,
+            exit: false,
+        })
+    }
+
+    fn evaluate_condition(&self, command: &str) -> Result<bool, String> {
+        let args = parse_args(command)?;
+        if args.is_empty() {
+            return Ok(false);
+        }
+        let expanded = expand_tokens(args)?;
+
+        match Command::new(&expanded[0]).args(&expanded[1..]).status() {
+            Ok(status) => Ok(status.success()),
+            Err(err) => Err(format!(
+                "failed to execute condition '{}': {err}",
+                expanded[0]
+            )),
+        }
+    }
+}
+
+fn split_indent(line: &str) -> (usize, &str) {
+    let bytes = line.as_bytes();
+    let mut idx = 0;
+    while idx < bytes.len() && bytes[idx] == b'\t' {
+        idx += 1;
+    }
+    (idx, &line[idx..])
 }
 
 fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
