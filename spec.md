@@ -143,7 +143,7 @@ alias ll="ls -la"
 unalias ll
 cd /srv/www
 ```
-**Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and aliases expand at command start plus optional global aliases for any token (`alias -g`).
+**Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`). Aliases expand at command start plus optional global aliases for any token (`alias -g`).
 
 ### Shell Settings
 **Difficulty:** Easy  

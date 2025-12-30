@@ -431,14 +431,6 @@ fn is_quoted_token(token: &str) -> bool {
         || (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
 }
 
-fn strip_quotes(token: &str) -> String {
-    if is_quoted_token(token) {
-        token[1..token.len() - 1].to_string()
-    } else {
-        token.to_string()
-    }
-}
-
 fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
     if tokens.is_empty() {
         return Ok(tokens);
@@ -686,11 +678,9 @@ fn run_alias_builtin_unexpanded(
     if !is_valid_alias_name(alias_name) {
         return Err(format!("alias: invalid name '{alias_name}'"));
     }
-    let value_tokens: Vec<String> = args[arg_idx + 1..]
-        .iter()
-        .map(|token| strip_quotes(token))
-        .collect();
-    let value = value_tokens.join(" ");
+    let raw_tokens = args[arg_idx + 1..].to_vec();
+    let expanded_tokens = expand_tokens(raw_tokens, state)?;
+    let value = expanded_tokens.join(" ");
     state.set_alias(alias_name, value, global);
     Ok(Some(RunResult::Success(true)))
 }

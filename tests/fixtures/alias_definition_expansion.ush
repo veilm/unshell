@@ -1,0 +1,11 @@
+foo=bar
+alias n "hi $foo"
+n
+alias n "echo $foo"
+n
+foo=bar2
+n
+alias n 'echo $foo'
+n
+foo=bar3
+n
