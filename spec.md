@@ -33,7 +33,7 @@ ls ...$files
 
 ### Command Substitution with Square Brackets
 **Difficulty:** Medium  
-Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` for compatibility. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere, and `$[]` is treated the same as `[]` for callers that prefer explicit sigils.
+Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line.
 ```bash
 cp [which python3] ./bin/python-system
 hash="sha256:[sha256sum Cargo.lock]"
@@ -41,9 +41,9 @@ hash="sha256:[sha256sum Cargo.lock]"
 
 ### Configurable Trailing-Newline Trimming
 **Difficulty:** Easy  
-Because many programs emit terminal newlines, captures strip exactly one trailing `\n` by default. A shell option (e.g., `set capture.trim_newline=false`) toggles the behavior at runtime for workflows that need raw output.
+Because many programs emit terminal newlines, captures strip exactly one trailing `\n` by default. A shell option toggles the behavior at runtime for workflows that need raw output. Proposed syntax: `set subshells.trim_newline false` (and `true` to re-enable).
 ```bash
-set capture.trim_newline=false
+set subshells.trim_newline false
 printf "[cat banner.bin]"
 ```
 
@@ -65,10 +65,10 @@ Parentheses still group pipelines without invoking capture semantics, letting us
 
 ### Control Flow Blocks
 **Difficulty:** Hard  
-Blocks are introduced by keywords (`if`, `else`, `for`, `foreach`) followed by either a newline with indentation (tabs or consistent 4-space groups, Python-style) **or** an inline brace-delimited block. Authors can mix styles per block, but indentation inside braces is still recommended for clarity.
+Blocks are introduced by keywords (`if`, `else`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** an inline brace-delimited block. Authors can mix styles per block, but indentation inside braces is still recommended for clarity.
 ```bash
 if test -f config.toml
-    echo "config exists"
+	echo "config exists"
 else
     echo "missing config"
 
@@ -87,31 +87,37 @@ for server in ...[cat servers.list | quote]
 
 ### Stream Loops: `foreach`
 **Difficulty:** Hard  
-`cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the indented block for each row. The block decides what to emit downstream (e.g., `echo $name`) so `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell.
+`cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the indented block for each row. The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything. `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell.
 ```bash
 ls -1 | foreach file
-    cp $file ../backup/
+	cp $file ../backup/
     echo $file
 | grep ".txt"
 ```
 
 ### External Expansion Handlers
 **Difficulty:** Hard  
-Globs, brace expansion, or other sigils are delegated to user-space helpers registered via configuration (e.g., mapping `{` to `esh-expander curly`). When the parser sees a trigger, it runs the helper with the raw token and expects a JSON array of replacement arguments. This keeps the core small while letting users add or remove expansions without recompiling the shell.
+Globs, brace expansion, or other sigils are delegated to a single user-space helper configured via `set`. Callers enable the characters that should trigger expansion (`set expansions.characters "@" on`, `set expansions.characters "{" on`, etc.), then point the shell at the handler binary and its fixed leading arguments (`set expansions.handler foo bar baz`). When the parser sees any unescaped, unquoted token containing a registered character, it invokes the handler as `foo bar baz <token>` and expects a JSON array of replacement arguments. The helper is responsible for parsing mixed syntax (e.g., both `@` and `{}` inside one token) and deciding how to expand it. This keeps the core small while letting users swap expansion strategies without recompiling the shell.
 ```bash
-# Example protocol (pseudo):
-esh-expander glob "*.[ch]"
-# -> ["main.c","util.h"]
+# Example configuration
+set expansions.characters "@" on
+set expansions.characters "{" on
+set expansions.handler esh-expand --mode glob
+
+# Example handler invocation
+echo foo@bar{.txt,.log}
+# -> shell calls: esh-expand --mode glob "foo@bar{.txt,.log}"
+# -> handler prints JSON array such as ["foo@bar.txt","foo@bar.log"]
 ```
 
 ### External String & Quoting Utilities
 **Difficulty:** Medium  
-Utilities such as `s` (string transforms), `split` (delimiter-to-newline rewrites), and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries. Users can replace or omit them entirely. They enable ergonomic transformations without inflating the shell.
+Utilities such as `s` (string transforms) and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries. `quote`'s contract: read stdin, treat each line as a record, emit a space-separated list where each record is wrapped in quotes and internal quotes/backslashes are escaped so `...` can safely re-tokenize the output. Additional helpers (like a configurable-delimiter `split`) can exist in user space, but the shell core remains agnostic.
 ```bash
 title=$(s $raw_title trim)
 ls ...[ls | quote]
-for path in ...[split "\n" $LIST]
-    rm $path
+for path in ...[cat files.list | quote]
+	rm $path
 ```
 
 ### Minimal Built-ins & Aliases
@@ -125,10 +131,3 @@ cd /srv/www
 
 ## Ambiguities / Open Questions
 - **Error handling mode:** Should non-zero exit codes inside pipelines or blocks abort the script (akin to `set -e`) or only fail the current step?
-- **`foreach` pass-through default:** Do we implicitly forward each input line when the block produces no output, or is echoing required to keep downstream stages fed?
-- **Indentation rules:** Are tabs and spaces freely mixable if they result in the same visual width, or should the parser enforce a single style per file/session?
-- **Capture newline option interface:** What is the exact syntax for toggling newline trimming (e.g., `set capture.trim_newline=false` vs `set capture trim=false`)?
-- **Expansion handler registration:** How does a user declare which helper handles which sigil, and can multiple handlers chain for the same token?
-- **`quote`/`split` contract:** What exact escaping rules do these helpers follow so `...` can parse their output safely, especially for control characters?
-- **Literal `[` command ergonomics:** Do we need a shorthand for running `/usr/bin/[`, or is requiring quotes/aliases acceptable for scripts that still call it directly?
-- **Capture tokens within quotes:** Current rule is “captures are recognized only for unquoted tokens starting with `[`”; do we still want aliases like `$()`/`$[]` active inside strings, or should quotes always suppress substitution?
