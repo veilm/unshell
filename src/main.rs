@@ -257,15 +257,17 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
             continue;
         }
 
-        let and_chain = split_on_and(sequence);
+        let chain = split_on_and_or(sequence);
         let mut last_success = true;
-        for segment in and_chain {
+        for (op, segment) in chain {
             let segment = segment.trim();
             if segment.is_empty() {
                 continue;
             }
-            if !last_success {
-                continue;
+            match op {
+                LogicOp::And if !last_success => continue,
+                LogicOp::Or if last_success => continue,
+                _ => {}
             }
             match run_pipeline_segment(segment, state) {
                 Ok(RunResult::Exit) => return false,
@@ -791,6 +793,19 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 _ => Err(format!("set: unknown option '{key}'")),
             }
         }
+        "eval" => {
+            if args.len() != 2 {
+                return Err("eval: expected a single argument".into());
+            }
+            let mut ctx = ScriptContext {
+                lines: vec![args[1].clone()],
+                state,
+            };
+            if ctx.execute_with_exit()? {
+                return Ok(Some(RunResult::Exit));
+            }
+            Ok(Some(RunResult::Success(true)))
+        }
         _ => Ok(None),
     }
 }
@@ -1122,7 +1137,13 @@ fn append_pipeline_tail(after: &mut Vec<String>, tail: &str) -> Result<(), Strin
     Ok(())
 }
 
-fn split_on_and(line: &str) -> Vec<String> {
+enum LogicOp {
+    None,
+    And,
+    Or,
+}
+
+fn split_on_and_or(line: &str) -> Vec<(LogicOp, String)> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut in_double = false;
@@ -1130,6 +1151,7 @@ fn split_on_and(line: &str) -> Vec<String> {
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
     let mut chars = line.chars().peekable();
+    let mut next_op = LogicOp::None;
 
     while let Some(ch) = chars.next() {
         if in_double && ch == '\\' && paren_depth == 0 {
@@ -1186,8 +1208,19 @@ fn split_on_and(line: &str) -> Vec<String> {
             '&' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 if matches!(chars.peek(), Some('&')) {
                     chars.next();
-                    parts.push(current);
+                    parts.push((next_op, current));
                     current = String::new();
+                    next_op = LogicOp::And;
+                } else {
+                    current.push(ch);
+                }
+            }
+            '|' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if matches!(chars.peek(), Some('|')) {
+                    chars.next();
+                    parts.push((next_op, current));
+                    current = String::new();
+                    next_op = LogicOp::Or;
                 } else {
                     current.push(ch);
                 }
@@ -1196,7 +1229,7 @@ fn split_on_and(line: &str) -> Vec<String> {
         }
     }
 
-    parts.push(current);
+    parts.push((next_op, current));
     parts
 }
 

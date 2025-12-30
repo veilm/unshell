@@ -1,0 +1,4 @@
+false && echo nope
+true && echo yes
+false || echo ok
+true || echo no
