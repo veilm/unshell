@@ -483,7 +483,11 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
 }
 
 enum BraceParse {
-    Inline { head: String, body: String },
+    Inline {
+        head: String,
+        body: String,
+        tail: Option<String>,
+    },
     Open { head: String, tail: String },
     None { head: String },
 }
@@ -652,7 +656,13 @@ fn parse_brace_block(line: &str) -> BraceParse {
 
     let head = line[..brace_start].trim_end().to_string();
     let body = line[brace_start + 1..end].trim().to_string();
-    BraceParse::Inline { head, body }
+    let tail_raw = line[end + 1..].trim();
+    let tail = if tail_raw.is_empty() {
+        None
+    } else {
+        Some(tail_raw.to_string())
+    };
+    BraceParse::Inline { head, body, tail }
 }
 
 fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), String> {
@@ -672,7 +682,7 @@ fn collect_brace_block(
     lines: &[String],
     start_idx: usize,
     tail: Option<String>,
-) -> Result<(Vec<String>, usize), String> {
+) -> Result<(Vec<String>, usize, Option<String>), String> {
     let mut block_lines = Vec::new();
     if let Some(tail) = tail {
         if !tail.is_empty() {
@@ -691,6 +701,21 @@ fn collect_brace_block(
         let mut paren_depth = 0;
         let bytes = raw.as_bytes();
         let mut pos = 0;
+
+        if trimmed.starts_with('}') {
+            let trailing = trimmed[1..].trim();
+            brace_depth -= 1;
+            if brace_depth == 0 {
+                let tail_line = if trailing.is_empty() {
+                    None
+                } else {
+                    Some(trailing.to_string())
+                };
+                return Ok((block_lines, idx, tail_line));
+            }
+            idx += 1;
+            continue;
+        }
 
         while pos < bytes.len() {
             let ch = bytes[pos] as char;
@@ -751,10 +776,7 @@ fn collect_brace_block(
                 {
                     brace_depth -= 1;
                     if brace_depth == 0 {
-                        if trimmed != "}" {
-                            return Err("brace block must end with '}' on its own line".into());
-                        }
-                        return Ok((block_lines, idx));
+                        return Ok((block_lines, idx, None));
                     }
                 }
                 _ => {}
@@ -1276,9 +1298,9 @@ impl<'a> ScriptContext<'a> {
         should_execute: bool,
     ) -> Result<BlockResult, String> {
         while idx < self.lines.len() {
-            let raw = &self.lines[idx];
-            let (indent, content) = split_indent(raw);
-            let trimmed = content.trim();
+            let line = self.lines[idx].clone();
+            let (indent, content) = split_indent(&line);
+            let trimmed = content.trim().to_string();
 
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 idx += 1;
@@ -1319,8 +1341,14 @@ impl<'a> ScriptContext<'a> {
                 }
 
                 if brace_open {
-                    let (block_lines, end_idx) =
+                    let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, brace_tail)?;
+                    let (exit, next_idx, handled) = self.handle_else_chain_tail(
+                        tail_line,
+                        end_idx + 1,
+                        indent_level,
+                        should_execute && !run_child,
+                    )?;
                     if run_child {
                         let mut ctx = ScriptContext {
                             lines: block_lines,
@@ -1328,12 +1356,20 @@ impl<'a> ScriptContext<'a> {
                         };
                         if ctx.execute_with_exit()? {
                             return Ok(BlockResult {
-                                next: end_idx + 1,
+                                next: next_idx,
                                 exit: true,
                             });
                         }
+                    } else if handled {
+                        // else/elif chain executed instead
                     }
-                    idx = end_idx + 1;
+                    idx = next_idx;
+                    if exit {
+                        return Ok(BlockResult {
+                            next: idx,
+                            exit: true,
+                        });
+                    }
                     continue;
                 }
 
@@ -1345,11 +1381,24 @@ impl<'a> ScriptContext<'a> {
                 if result.exit {
                     return Ok(result);
                 }
+
+                let (exit, next_idx, handled) =
+                    self.handle_else_chain(idx, indent_level, should_execute && !run_child)?;
+                idx = next_idx;
+                if exit {
+                    return Ok(BlockResult {
+                        next: idx,
+                        exit: true,
+                    });
+                }
+                if handled {
+                    continue;
+                }
                 continue;
             }
 
             if let Some((var_name, before, after, brace_block, brace_open, brace_tail)) =
-                parse_foreach_line(trimmed)
+                parse_foreach_line(&trimmed)
             {
                 if !is_valid_var_name(&var_name) {
                     return Err(format!(
@@ -1377,7 +1426,7 @@ impl<'a> ScriptContext<'a> {
                 }
 
                 if brace_open {
-                    let (block_lines, end_idx) =
+                    let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, brace_tail)?;
                     if should_execute {
                         let commands = build_pipeline_commands(&before, self.state)?;
@@ -1395,6 +1444,11 @@ impl<'a> ScriptContext<'a> {
                                 });
                             }
                         }
+                    }
+                    if let Some(tail) = tail_line {
+                        return Err(format!(
+                            "unexpected trailing text after foreach block: {tail}"
+                        ));
                     }
                     idx = end_idx + 1;
                     continue;
@@ -1451,7 +1505,7 @@ impl<'a> ScriptContext<'a> {
                 }
 
                 if brace_open {
-                    let (block_lines, end_idx) =
+                    let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, brace_tail)?;
                     if should_execute {
                         for value in list {
@@ -1467,6 +1521,11 @@ impl<'a> ScriptContext<'a> {
                                 });
                             }
                         }
+                    }
+                    if let Some(tail) = tail_line {
+                        return Err(format!(
+                            "unexpected trailing text after for block: {tail}"
+                        ));
                     }
                     idx = end_idx + 1;
                     continue;
@@ -1490,7 +1549,7 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
-            if should_execute && !process_line(trimmed, &mut self.state) {
+            if should_execute && !process_line(&trimmed, &mut self.state) {
                 return Ok(BlockResult {
                     next: idx + 1,
                     exit: true,
@@ -1504,6 +1563,163 @@ impl<'a> ScriptContext<'a> {
             next: idx,
             exit: false,
         })
+    }
+
+    fn handle_else_chain(
+        &mut self,
+        mut idx: usize,
+        indent_level: usize,
+        should_execute: bool,
+    ) -> Result<(bool, usize, bool), String> {
+        let mut handled = false;
+        while idx < self.lines.len() {
+            let line = self.lines[idx].clone();
+            let (indent, content) = split_indent(&line);
+            let trimmed = content.trim().to_string();
+
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                idx += 1;
+                continue;
+            }
+
+            if indent < indent_level {
+                break;
+            }
+
+            if indent > indent_level {
+                return Err(format!("unexpected indent on line {}", idx + 1));
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("elif ") {
+                handled = true;
+                let (exit, next_idx, done) =
+                    self.handle_else_line(rest, idx + 1, indent_level, should_execute, true)?;
+                if done {
+                    return Ok((exit, next_idx, true));
+                }
+                idx = next_idx;
+                continue;
+            }
+
+            if trimmed == "else" || trimmed.starts_with("else ") {
+                handled = true;
+                let tail = if trimmed == "else" {
+                    ""
+                } else {
+                    trimmed.strip_prefix("else ").unwrap_or("")
+                };
+                let (exit, next_idx, done) =
+                    self.handle_else_line(tail, idx + 1, indent_level, should_execute, false)?;
+                if done {
+                    return Ok((exit, next_idx, true));
+                }
+                idx = next_idx;
+                continue;
+            }
+
+            break;
+        }
+
+        Ok((false, idx, handled))
+    }
+
+    fn handle_else_chain_tail(
+        &mut self,
+        tail_line: Option<String>,
+        idx: usize,
+        indent_level: usize,
+        should_execute: bool,
+    ) -> Result<(bool, usize, bool), String> {
+        if let Some(tail) = tail_line {
+            let trimmed = tail.trim();
+            if trimmed.starts_with("elif ") {
+                let rest = trimmed.strip_prefix("elif ").unwrap_or("").trim();
+                return self.handle_else_line(rest, idx, indent_level, should_execute, true);
+            }
+            if trimmed.starts_with("else") {
+                let rest = trimmed.strip_prefix("else").unwrap_or("").trim();
+                return self.handle_else_line(rest, idx, indent_level, should_execute, false);
+            }
+            return Err("unexpected trailing text after '}'".into());
+        }
+
+        self.handle_else_chain(idx, indent_level, should_execute)
+    }
+
+    fn handle_else_line(
+        &mut self,
+        rest: &str,
+        block_start: usize,
+        indent_level: usize,
+        should_execute: bool,
+        is_elif: bool,
+    ) -> Result<(bool, usize, bool), String> {
+        let brace = parse_brace_block(rest);
+        let (condition, brace_block, brace_open, brace_tail) = match brace {
+            BraceParse::Inline { head, body } => (head, Some(body), false, None),
+            BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+            BraceParse::None { head } => (head, None, false, None),
+        };
+
+        let run_child = if is_elif {
+            if should_execute {
+                self.evaluate_condition(condition.trim())?
+            } else {
+                false
+            }
+        } else {
+            should_execute
+        };
+
+        if let Some(block) = brace_block {
+            if run_child {
+                execute_inline_block(&block, self.state)?;
+                return Ok((false, block_start, true));
+            }
+            return self.handle_else_chain(block_start, indent_level, should_execute && !run_child);
+        }
+
+        if brace_open {
+            let (block_lines, end_idx, tail_line) =
+                collect_brace_block(&self.lines, block_start, brace_tail)?;
+            if run_child {
+                let mut ctx = ScriptContext {
+                    lines: block_lines,
+                    state: self.state,
+                };
+                if ctx.execute_with_exit()? {
+                    return Ok((true, end_idx + 1, true));
+                }
+                if let Some(tail) = tail_line {
+                    let (exit, next_idx, _) = self.handle_else_chain_tail(
+                        Some(tail),
+                        end_idx + 1,
+                        indent_level,
+                        false,
+                    )?;
+                    return Ok((exit, next_idx, true));
+                }
+                return Ok((false, end_idx + 1, true));
+            }
+            if let Some(tail) = tail_line {
+                return self.handle_else_chain_tail(
+                    Some(tail),
+                    end_idx + 1,
+                    indent_level,
+                    should_execute && !run_child,
+                );
+            }
+            return self.handle_else_chain(end_idx + 1, indent_level, should_execute && !run_child);
+        }
+
+        let result = self.execute_block(block_start, indent_level + 1, run_child)?;
+        if result.exit {
+            return Ok((true, result.next, true));
+        }
+        if run_child {
+            return Ok((false, result.next, true));
+        }
+        self.handle_else_chain(result.next, indent_level, should_execute && !run_child)
     }
 
     fn evaluate_condition(&self, command: &str) -> Result<bool, String> {

@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for`/`foreach` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if`/`else`/`elif` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for`/`foreach` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** newline trimming toggles and the expansion handler contract.
 
 ## Features
@@ -78,7 +78,7 @@ Parentheses still group pipelines without invoking capture semantics, letting us
 
 ### Control Flow Blocks
 **Difficulty:** Hard  
-Blocks are introduced by keywords (`if`, `else`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. **Current implementation:** tab-indented `if`/`for`/`foreach` blocks within scripts plus brace blocks for `if`, `for`, and `foreach` (no `else` yet).
+Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts.
 ```bash
 if test -f config.toml
 	echo "config exists"

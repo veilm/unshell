@@ -1,0 +1,36 @@
+if false {
+	echo nope
+} else {
+	echo yes
+}
+
+if false
+	echo no
+else
+	echo ok
+
+if false {
+	echo no
+} elif true {
+	echo yes
+} else {
+	echo nope
+}
+
+if false
+else { echo 1 }
+
+# if false {pwd} else {
+# 	echo 2
+# }
+
+if false {
+	echo 3
+} else
+	echo 4
+
+if false {
+	echo 5
+}
+else
+	echo 6
