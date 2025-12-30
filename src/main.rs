@@ -482,19 +482,194 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
     parts
 }
 
-fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>)> {
+fn split_brace_block(line: &str) -> (&str, Option<String>) {
+    let bytes = line.as_bytes();
+    let mut idx = 0;
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut brace_start = None;
+
+    while idx < bytes.len() {
+        let ch = bytes[idx] as char;
+
+        if in_double && ch == '\\' && paren_depth == 0 {
+            idx += 1;
+            if idx < bytes.len() {
+                idx += 1;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+            }
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if idx + 1 < bytes.len() && bytes[idx + 1] == b'(' {
+                    paren_depth = 1;
+                    idx += 1;
+                }
+            }
+            '[' if !in_double && !in_single && bracket_depth == 0 => {
+                if idx + 1 < bytes.len() && (bytes[idx + 1] as char).is_whitespace() {
+                    // literal [
+                } else {
+                    bracket_depth = 1;
+                }
+            }
+            '[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+            }
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+            }
+            '{'
+                if !in_double
+                    && !in_single
+                    && bracket_depth == 0
+                    && paren_depth == 0 =>
+            {
+                brace_start = Some(idx);
+                break;
+            }
+            _ => {}
+        }
+
+        idx += 1;
+    }
+
+    let brace_start = match brace_start {
+        Some(pos) => pos,
+        None => return (line, None),
+    };
+
+    let mut brace_depth = 0;
+    let mut end = None;
+    let mut scan = brace_start;
+    in_double = false;
+    in_single = false;
+    bracket_depth = 0;
+    paren_depth = 0;
+
+    while scan < bytes.len() {
+        let ch = bytes[scan] as char;
+
+        if in_double && ch == '\\' && paren_depth == 0 {
+            scan += 1;
+            if scan < bytes.len() {
+                scan += 1;
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+            }
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if scan + 1 < bytes.len() && bytes[scan + 1] == b'(' {
+                    paren_depth = 1;
+                    scan += 1;
+                }
+            }
+            '[' if !in_double && !in_single && bracket_depth == 0 => {
+                if scan + 1 < bytes.len() && (bytes[scan + 1] as char).is_whitespace() {
+                    // literal [
+                } else {
+                    bracket_depth = 1;
+                }
+            }
+            '[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+            }
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+            }
+            '{'
+                if !in_double
+                    && !in_single
+                    && bracket_depth == 0
+                    && paren_depth == 0 =>
+            {
+                brace_depth += 1;
+            }
+            '}'
+                if !in_double
+                    && !in_single
+                    && bracket_depth == 0
+                    && paren_depth == 0 =>
+            {
+                brace_depth -= 1;
+                if brace_depth == 0 {
+                    end = Some(scan);
+                    break;
+                }
+            }
+            _ => {}
+        }
+
+        scan += 1;
+    }
+
+    let end = match end {
+        Some(pos) => pos,
+        None => return (line, None),
+    };
+
+    let head = line[..brace_start].trim_end();
+    let body = line[brace_start + 1..end].trim();
+    (head, Some(body.to_string()))
+}
+
+fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), String> {
+    let segments = split_on_semicolons(block);
+    for segment in segments {
+        if segment.trim().is_empty() {
+            continue;
+        }
+        if !process_line(&segment, state) {
+            return Err("exit not allowed in inline block".into());
+        }
+    }
+    Ok(())
+}
+
+fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>, Option<String>)> {
     let segments = split_on_pipes(line);
     if segments.len() < 2 {
         return None;
     }
     let mut foreach_index = None;
     let mut foreach_var = String::new();
+    let mut foreach_block = None;
 
     for (idx, segment) in segments.iter().enumerate() {
-        let args = parse_args(segment.trim()).ok()?;
+        let (body, brace_block) = split_brace_block(segment.trim());
+        let args = parse_args(body).ok()?;
         if args.len() == 2 && args[0] == "foreach" {
             foreach_index = Some(idx);
             foreach_var = args[1].clone();
+            foreach_block = brace_block;
             break;
         }
     }
@@ -502,7 +677,7 @@ fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>)> 
     let foreach_index = foreach_index?;
     let before = segments[..foreach_index].to_vec();
     let after = segments[foreach_index + 1..].to_vec();
-    Some((foreach_var, before, after))
+    Some((foreach_var, before, after, foreach_block))
 }
 
 fn parse_args(line: &str) -> Result<Vec<String>, String> {
@@ -968,7 +1143,34 @@ impl<'a> ScriptContext<'a> {
                 return Err(format!("unexpected indent on line {}", idx + 1));
             }
 
-            if let Some((var_name, before, after)) = parse_foreach_line(trimmed) {
+            if let Some(rest) = trimmed.strip_prefix("if ") {
+                let (condition, brace_block) = split_brace_block(rest);
+                let run_child = if should_execute {
+                    self.evaluate_condition(condition.trim())?
+                } else {
+                    false
+                };
+
+                if let Some(block) = brace_block {
+                    if run_child {
+                        execute_inline_block(&block, self.state)?;
+                    }
+                    idx += 1;
+                    continue;
+                }
+
+                idx += 1;
+                let result =
+                    self.execute_block(idx, indent_level + 1, should_execute && run_child)?;
+                idx = result.next;
+
+                if result.exit {
+                    return Ok(result);
+                }
+                continue;
+            }
+
+            if let Some((var_name, before, after, brace_block)) = parse_foreach_line(trimmed) {
                 if !is_valid_var_name(&var_name) {
                     return Err(format!(
                         "invalid foreach variable '{}' on line {}",
@@ -979,6 +1181,19 @@ impl<'a> ScriptContext<'a> {
 
                 if !after.is_empty() {
                     return Err("foreach must be the final pipeline stage".into());
+                }
+
+                if let Some(block) = brace_block {
+                    if should_execute {
+                        let commands = build_pipeline_commands(&before, self.state)?;
+                        let output = run_pipeline_capture(commands)?;
+                        for line in output.lines() {
+                            self.state.set_var(&var_name, line.to_string());
+                            execute_inline_block(&block, self.state)?;
+                        }
+                    }
+                    idx += 1;
+                    continue;
                 }
 
                 idx += 1;
@@ -1002,7 +1217,8 @@ impl<'a> ScriptContext<'a> {
             }
 
             if let Some(rest) = trimmed.strip_prefix("for ") {
-                let args = parse_args(rest)?;
+                let (body, brace_block) = split_brace_block(rest);
+                let args = parse_args(body)?;
                 if args.len() < 3 || args[1] != "in" {
                     return Err(format!("invalid for syntax on line {}", idx + 1));
                 }
@@ -1013,39 +1229,31 @@ impl<'a> ScriptContext<'a> {
                 }
 
                 let list = expand_tokens(args[2..].to_vec(), &self.state)?;
-                idx += 1;
-                let block_start = idx;
-                let block_end = self.find_block_end(block_start, indent_level + 1);
 
-                if should_execute {
-                    for value in list {
-                        self.state.set_var(var_name, value);
-                        let result = self.execute_block(block_start, indent_level + 1, true)?;
-                        if result.exit {
-                            return Ok(result);
+                if let Some(block) = brace_block {
+                    if should_execute {
+                        for value in list {
+                            self.state.set_var(var_name, value);
+                            execute_inline_block(&block, self.state)?;
                         }
                     }
-                }
-
-                idx = block_end;
-                continue;
-            }
-
-            if let Some(rest) = trimmed.strip_prefix("if ") {
-                let condition = rest.trim();
-                let run_child = if should_execute {
-                    self.evaluate_condition(condition)?
+                    idx += 1;
                 } else {
-                    false
-                };
+                    idx += 1;
+                    let block_start = idx;
+                    let block_end = self.find_block_end(block_start, indent_level + 1);
 
-                idx += 1;
-                let result =
-                    self.execute_block(idx, indent_level + 1, should_execute && run_child)?;
-                idx = result.next;
+                    if should_execute {
+                        for value in list {
+                            self.state.set_var(var_name, value);
+                            let result = self.execute_block(block_start, indent_level + 1, true)?;
+                            if result.exit {
+                                return Ok(result);
+                            }
+                        }
+                    }
 
-                if result.exit {
-                    return Ok(result);
+                    idx = block_end;
                 }
                 continue;
             }
