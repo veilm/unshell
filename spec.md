@@ -39,7 +39,7 @@ ls ...$files
 
 ### Command Substitution with Square Brackets
 **Difficulty:** Medium  
-Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[` and `[ ]` stays literal. Unquoted tokens can concatenate captures with surrounding text (e.g., `foo-[echo bar]`), and captures may nest (e.g., `[echo [pwd]]`). `$()` substitutions are also grouped as a single token even when they include spaces (e.g., `$(echo a b)`), and their output is inserted as one argument unless spread with `...`. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line.
+Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[` and `[ ]` stays literal. Unquoted tokens can concatenate captures with surrounding text (e.g., `foo-[echo bar]`), and captures may nest (e.g., `[echo [pwd]]`). `$()` substitutions are also grouped as a single token even when they include spaces (e.g., `$(echo a b)`), and their output is inserted as one argument unless spread with `...`. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line. **Current implementation:** captures run in a subshell using the same parser/executor as scripts (aliases, builtins, control flow, and pipelines). Changes inside the capture do not mutate the parent shell.
 ```bash
 cp [which python3] ./bin/python-system
 hash="sha256:[sha256sum Cargo.lock]"
@@ -144,6 +144,18 @@ unalias ll
 cd /srv/www
 ```
 **Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`). Aliases expand at command start plus optional global aliases for any token (`alias -g`).
+
+### Alias Semantics
+**Difficulty:** Easy  
+Aliases are parsed like normal commands: argument parsing and expansions happen before the builtin receives values. Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first token of a command or pipeline segment.
+```bash
+alias greet "echo $name"
+alias -g today "[date +%F]"
+
+greet      # expands to: echo <value-of-$name-at-definition-time>
+echo today # expands to: echo [date +%F]
+```
+**Current implementation:** alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand; alias expansion repeats while `aliases.recursive` is true; quoted tokens never trigger global alias replacement; alias expansion happens before control keywords are parsed.
 
 ### Shell Settings
 **Difficulty:** Easy  

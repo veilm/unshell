@@ -1,0 +1,8 @@
+rm -rf /tmp/ush-alias-capture
+mkdir -p /tmp/ush-alias-capture
+alias here pwd
+cd /tmp/ush-alias-capture
+echo $(here)
+alias say "echo hi"
+echo "$(say)"
+rm -rf /tmp/ush-alias-capture

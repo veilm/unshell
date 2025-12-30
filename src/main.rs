@@ -16,6 +16,13 @@ fn main() {
         }
         return;
     }
+    if args.len() > 1 && args[1] == "--capture-worker" {
+        if let Err(err) = run_capture_worker(&args[2..]) {
+            eprintln!("unshell: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if args.len() > 1 {
         if let Err(err) = run_script(&args[1]) {
@@ -77,6 +84,11 @@ struct ForeachWorkerArgs {
     inline: bool,
 }
 
+struct CaptureWorkerArgs {
+    script_path: PathBuf,
+    locals_path: PathBuf,
+}
+
 fn run_foreach_worker(args: &[String]) -> Result<(), String> {
     let opts = parse_foreach_worker_args(args)?;
     let mut state = read_locals_file(&opts.locals_path)
@@ -116,6 +128,23 @@ fn run_foreach_worker(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_capture_worker(args: &[String]) -> Result<(), String> {
+    let opts = parse_capture_worker_args(args)?;
+    let mut state = read_locals_file(&opts.locals_path)
+        .map_err(|err| format!("failed to load capture locals: {err}"))?;
+    let script = read_block_file(&opts.script_path)
+        .map_err(|err| format!("failed to load capture script: {err}"))?;
+
+    let mut ctx = ScriptContext {
+        lines: vec![script],
+        state: &mut state,
+    };
+    if ctx.execute_with_exit()? {
+        return Err("exit not allowed in capture".into());
+    }
+    Ok(())
+}
+
 fn parse_foreach_worker_args(args: &[String]) -> Result<ForeachWorkerArgs, String> {
     let mut var = None;
     let mut block_path = None;
@@ -152,6 +181,36 @@ fn parse_foreach_worker_args(args: &[String]) -> Result<ForeachWorkerArgs, Strin
         block_path: block_path.ok_or_else(|| "foreach worker missing --block".to_string())?,
         locals_path: locals_path.ok_or_else(|| "foreach worker missing --locals".to_string())?,
         inline,
+    })
+}
+
+fn parse_capture_worker_args(args: &[String]) -> Result<CaptureWorkerArgs, String> {
+    let mut script_path = None;
+    let mut locals_path = None;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--script" => {
+                idx += 1;
+                script_path = args.get(idx).map(PathBuf::from);
+            }
+            "--locals" => {
+                idx += 1;
+                locals_path = args.get(idx).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!("unknown capture worker flag '{other}'"));
+            }
+        }
+        idx += 1;
+    }
+
+    Ok(CaptureWorkerArgs {
+        script_path: script_path
+            .ok_or_else(|| "capture worker missing --script".to_string())?,
+        locals_path: locals_path
+            .ok_or_else(|| "capture worker missing --locals".to_string())?,
     })
 }
 
@@ -1899,18 +1958,20 @@ fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
         return Ok(String::new());
     }
 
-    let args = parse_args(inner).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    if args.is_empty() {
-        return Ok(String::new());
-    }
+    let (locals_path, _guard) =
+        write_locals_file(state).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let (script_path, _script_guard) =
+        write_block_file(inner).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    let exe = env::current_exe()?;
+    let output = Command::new(exe)
+        .arg("--capture-worker")
+        .arg("--script")
+        .arg(script_path)
+        .arg("--locals")
+        .arg(locals_path)
+        .output()?;
 
-    let args = expand_tokens(args, state)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    if args.is_empty() {
-        return Ok(String::new());
-    }
-
-    let output = Command::new(&args[0]).args(&args[1..]).output()?;
+    io::stderr().write_all(&output.stderr)?;
     trim_capture_output(output)
 }
 
