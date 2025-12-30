@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::{Command, ExitStatus, Output};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -65,40 +65,33 @@ fn process_line(line: &str, state: &mut ShellState) -> bool {
         return true;
     }
 
-    if trimmed == "exit" {
-        return false;
-    }
-
-    let args = match parse_args(trimmed) {
-        Ok(args) => args,
-        Err(err) => {
-            eprintln!("unshell: {err}");
-            return true;
+    let sequences = split_on_semicolons(trimmed);
+    for sequence in sequences {
+        let sequence = sequence.trim();
+        if sequence.is_empty() {
+            continue;
         }
-    };
 
-    let expanded = match expand_tokens(args, state) {
-        Ok(args) => args,
-        Err(err) => {
-            eprintln!("unshell: {err}");
-            return true;
+        let and_chain = split_on_and(sequence);
+        let mut last_success = true;
+        for segment in and_chain {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+            if !last_success {
+                continue;
+            }
+            match run_pipeline_segment(segment, state) {
+                Ok(RunResult::Exit) => return false,
+                Ok(RunResult::Success(success)) => last_success = success,
+                Err(err) => {
+                    eprintln!("unshell: {err}");
+                    last_success = false;
+                }
+            }
         }
-    };
-
-    let (assignments, remaining) = split_assignments(&expanded);
-    for (name, value) in assignments {
-        state.set_var(&name, value);
     }
-
-    if remaining.is_empty() {
-        return true;
-    }
-
-    if remaining.len() == 1 && remaining[0] == "exit" {
-        return false;
-    }
-
-    execute(remaining);
     true
 }
 
@@ -164,6 +157,216 @@ fn is_valid_var_name(name: &str) -> bool {
     }
 
     true
+}
+
+enum RunResult {
+    Success(bool),
+    Exit,
+}
+
+fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResult, String> {
+    let commands = split_on_pipes(segment);
+    let commands_len = commands.len();
+    if commands.is_empty() {
+        return Ok(RunResult::Success(true));
+    }
+
+    let mut expanded_commands = Vec::new();
+    for cmd in commands {
+        let args = parse_args(cmd.trim())?;
+        let expanded = expand_tokens(args, state)?;
+        let (assignments, remaining) = split_assignments(&expanded);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            if commands_len == 1 {
+                return Ok(RunResult::Success(true));
+            }
+            return Err("empty command in pipeline".into());
+        }
+
+        if remaining.len() == 1 && remaining[0] == "exit" && commands_len == 1 {
+            return Ok(RunResult::Exit);
+        }
+
+        expanded_commands.push(remaining.to_vec());
+    }
+
+    if expanded_commands.len() == 1 {
+        let success = execute_with_status(&expanded_commands[0]);
+        return Ok(RunResult::Success(success));
+    }
+
+    run_pipeline(expanded_commands).map(RunResult::Success)
+}
+
+fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
+    let mut children = Vec::new();
+    let mut prev_stdout: Option<std::process::ChildStdout> = None;
+
+    for (idx, args) in commands.iter().enumerate() {
+        let mut cmd = Command::new(&args[0]);
+        cmd.args(&args[1..]);
+
+        if let Some(stdout) = prev_stdout.take() {
+            cmd.stdin(Stdio::from(stdout));
+        }
+
+        if idx + 1 < commands.len() {
+            cmd.stdout(Stdio::piped());
+        }
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
+
+        if idx + 1 < commands.len() {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
+            prev_stdout = Some(stdout);
+        }
+
+        children.push((args[0].clone(), child));
+    }
+
+    let mut last_success = true;
+    for (idx, (name, mut child)) in children.into_iter().enumerate() {
+        let status = child
+            .wait()
+            .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
+        if !status.success() {
+            report_status(&name, status);
+        }
+        if idx + 1 == commands.len() {
+            last_success = status.success();
+        }
+    }
+
+    Ok(last_success)
+}
+
+fn split_on_semicolons(line: &str) -> Vec<String> {
+    split_by_char(line, ';')
+}
+
+fn split_on_pipes(line: &str) -> Vec<String> {
+    split_by_char(line, '|')
+}
+
+fn split_on_and(line: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_double && ch == '\\' {
+            current.push(ch);
+            if let Some(next) = chars.next() {
+                current.push(next);
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 => {
+                in_single = !in_single;
+                current.push(ch);
+            }
+            '"' if !in_single && bracket_depth == 0 => {
+                in_double = !in_double;
+                current.push(ch);
+            }
+            '[' if !in_double && !in_single && bracket_depth == 0 => {
+                if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                    current.push(ch);
+                } else {
+                    bracket_depth = 1;
+                    current.push(ch);
+                }
+            }
+            '[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+                current.push(ch);
+            }
+            '&' if !in_double && !in_single && bracket_depth == 0 => {
+                if matches!(chars.peek(), Some('&')) {
+                    chars.next();
+                    parts.push(current);
+                    current = String::new();
+                } else {
+                    current.push(ch);
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    parts.push(current);
+    parts
+}
+
+fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_double && ch == '\\' {
+            current.push(ch);
+            if let Some(next) = chars.next() {
+                current.push(next);
+            }
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 => {
+                in_single = !in_single;
+                current.push(ch);
+            }
+            '"' if !in_single && bracket_depth == 0 => {
+                in_double = !in_double;
+                current.push(ch);
+            }
+            '[' if !in_double && !in_single && bracket_depth == 0 => {
+                if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                    current.push(ch);
+                } else {
+                    bracket_depth = 1;
+                    current.push(ch);
+                }
+            }
+            '[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+                current.push(ch);
+            }
+            ch if ch == delimiter && !in_double && !in_single && bracket_depth == 0 => {
+                parts.push(current);
+                current = String::new();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    parts.push(current);
+    parts
 }
 
 fn parse_args(line: &str) -> Result<Vec<String>, String> {
@@ -718,14 +921,20 @@ fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
     stdout.flush()
 }
 
-fn execute(args: &[String]) {
+fn execute_with_status(args: &[String]) -> bool {
     if args.is_empty() {
-        return;
+        return true;
     }
 
     match Command::new(&args[0]).args(&args[1..]).status() {
-        Ok(status) => report_status(&args[0], status),
-        Err(err) => eprintln!("unshell: failed to execute '{}': {err}", args[0]),
+        Ok(status) => {
+            report_status(&args[0], status);
+            status.success()
+        }
+        Err(err) => {
+            eprintln!("unshell: failed to execute '{}': {err}", args[0]);
+            false
+        }
     }
 }
 

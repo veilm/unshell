@@ -6,16 +6,18 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, and runs tab-indented `for` loops in scripts. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** `foreach` control flow, newline trimming toggles, and the expansion handler contract.
 
 ## Features
 
 ### Execution & Pipes
 **Difficulty:** Easy  
-Commands run left-to-right using standard fork/exec and POSIX-style pipes. There is no special syntax beyond `cmd arg | next_cmd`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
+Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` sequences commands unconditionally, and `&&` short-circuits on failure. There is no special syntax beyond `cmd arg | next_cmd`, `;`, and `&&`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
 ```bash
 ls /var/log | grep error | tail -n 20
+echo first; echo second
+true && echo ok
 ```
 
 ### Atomic Variables & Assignment
