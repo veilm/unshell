@@ -262,10 +262,11 @@ fn split_on_and(line: &str) -> Vec<String> {
     let mut in_double = false;
     let mut in_single = false;
     let mut bracket_depth = 0;
+    let mut paren_depth = 0;
     let mut chars = line.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        if in_double && ch == '\\' {
+        if in_double && ch == '\\' && paren_depth == 0 {
             current.push(ch);
             if let Some(next) = chars.next() {
                 current.push(next);
@@ -274,13 +275,23 @@ fn split_on_and(line: &str) -> Vec<String> {
         }
 
         match ch {
-            '\'' if !in_double && bracket_depth == 0 => {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
                 in_single = !in_single;
                 current.push(ch);
             }
-            '"' if !in_single && bracket_depth == 0 => {
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 in_double = !in_double;
                 current.push(ch);
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if matches!(chars.peek(), Some('(')) {
+                    chars.next();
+                    paren_depth = 1;
+                    current.push('$');
+                    current.push('(');
+                } else {
+                    current.push(ch);
+                }
             }
             '[' if !in_double && !in_single && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
@@ -298,7 +309,15 @@ fn split_on_and(line: &str) -> Vec<String> {
                 bracket_depth -= 1;
                 current.push(ch);
             }
-            '&' if !in_double && !in_single && bracket_depth == 0 => {
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                current.push(ch);
+            }
+            '&' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 if matches!(chars.peek(), Some('&')) {
                     chars.next();
                     parts.push(current);
@@ -321,10 +340,11 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
     let mut in_double = false;
     let mut in_single = false;
     let mut bracket_depth = 0;
+    let mut paren_depth = 0;
     let mut chars = line.chars().peekable();
 
     while let Some(ch) = chars.next() {
-        if in_double && ch == '\\' {
+        if in_double && ch == '\\' && paren_depth == 0 {
             current.push(ch);
             if let Some(next) = chars.next() {
                 current.push(next);
@@ -333,13 +353,23 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
         }
 
         match ch {
-            '\'' if !in_double && bracket_depth == 0 => {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
                 in_single = !in_single;
                 current.push(ch);
             }
-            '"' if !in_single && bracket_depth == 0 => {
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 in_double = !in_double;
                 current.push(ch);
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if matches!(chars.peek(), Some('(')) {
+                    chars.next();
+                    paren_depth = 1;
+                    current.push('$');
+                    current.push('(');
+                } else {
+                    current.push(ch);
+                }
             }
             '[' if !in_double && !in_single && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
@@ -357,7 +387,20 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
                 bracket_depth -= 1;
                 current.push(ch);
             }
-            ch if ch == delimiter && !in_double && !in_single && bracket_depth == 0 => {
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                current.push(ch);
+            }
+            ch if ch == delimiter
+                && !in_double
+                && !in_single
+                && bracket_depth == 0
+                && paren_depth == 0 =>
+            {
                 parts.push(current);
                 current = String::new();
             }
@@ -373,6 +416,7 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut bracket_depth = 0;
+    let mut paren_depth = 0;
     let mut in_double = false;
     let mut in_single = false;
     let mut current_quote: Option<char> = None;
@@ -380,7 +424,7 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
 
     while let Some(ch) = chars.next() {
         match ch {
-            '\'' if bracket_depth == 0 && !in_double && !in_single => {
+            '\'' if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single => {
                 if !current.is_empty() {
                     return Err("unexpected quote inside token".into());
                 }
@@ -390,19 +434,29 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
             '\'' if in_single => {
                 in_single = false;
             }
-            '"' if bracket_depth == 0 && !in_double => {
+            '"' if bracket_depth == 0 && paren_depth == 0 && !in_double => {
                 if !current.is_empty() {
                     return Err("unexpected quote inside token".into());
                 }
                 in_double = true;
                 current_quote = Some('"');
             }
-            '"' if in_double => {
+            '"' if in_double && paren_depth == 0 => {
                 in_double = false;
             }
-            '\\' if in_double => {
+            '\\' if in_double && paren_depth == 0 => {
                 if let Some(next) = chars.next() {
                     current.push(next);
+                }
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if matches!(chars.peek(), Some('(')) {
+                    chars.next();
+                    paren_depth = 1;
+                    current.push('$');
+                    current.push('(');
+                } else {
+                    current.push(ch);
                 }
             }
             '[' if !in_double && !in_single && bracket_depth == 0 => {
@@ -421,7 +475,20 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 bracket_depth -= 1;
                 current.push(ch);
             }
-            c if c.is_whitespace() && bracket_depth == 0 && !in_double && !in_single => {
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                current.push(ch);
+            }
+            c if c.is_whitespace()
+                && bracket_depth == 0
+                && paren_depth == 0
+                && !in_double
+                && !in_single =>
+            {
                 if !current.is_empty() {
                     if let Some(quote) = current_quote {
                         args.push(format!("{quote}{current}{quote}"));
@@ -438,6 +505,10 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
 
     if bracket_depth != 0 {
         return Err("unterminated capture group".into());
+    }
+
+    if paren_depth != 0 {
+        return Err("unterminated command substitution".into());
     }
 
     if in_double {

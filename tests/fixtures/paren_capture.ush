@@ -1,0 +1,2 @@
+printf '%s|%s\n' $(echo "a b") x
+echo pre$(echo a b)post
