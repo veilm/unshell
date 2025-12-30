@@ -29,7 +29,7 @@ export EDITOR=vim # propagated to children
 
 ### Spread Operator `...`
 **Difficulty:** Hard  
-`...` re-tokenizes a string using the shell's own parser. `...$var` or `...[cmd]` behaves like `eval` in place: quotes, escapes, and whitespace in the source are honored so the caller controls splitting. This is how legacy behaviors (space splitting, inline scripts) are opt-in.
+`...` re-tokenizes a string using the shell's own parser. `...$var` or `...[cmd]` behaves like `eval` in place: quotes, escapes, and whitespace in the source are honored so the caller controls splitting. This is how legacy behaviors (space splitting, inline scripts) are opt-in. **Current implementation:** unquoted tokens starting with `...` re-tokenize their suffix after expanding captures/variables. This is distinct from inline capture concatenation (`a[pwd]`), which stays a single argument unless you explicitly use `...`.
 ```bash
 files="-la ./bin \"./my file.txt\""
 ls ...$files

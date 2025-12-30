@@ -271,6 +271,17 @@ fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>,
             }
             continue;
         }
+        if token.starts_with("...") {
+            let suffix = &token[3..];
+            if suffix.is_empty() {
+                return Err("spread requires content".into());
+            }
+            let source = expand_unquoted_token(suffix, state)?;
+            let spread_tokens = parse_args(&source)?;
+            let spread_expanded = expand_tokens(spread_tokens, state)?;
+            expanded.extend(spread_expanded);
+            continue;
+        }
 
         expanded.push(expand_unquoted_token(&token, state)?);
     }

@@ -1,0 +1,8 @@
+payload=[printf "%s" "a \"b c\" d"]
+printf "%s|" ...$payload
+echo
+printf "%s|" ...[printf "%s %s" one two]
+echo
+echo a[pwd]
+printf "%s|" ...f[echo hi]
+echo
