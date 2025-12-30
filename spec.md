@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext scripts line-by-line (with `exit` handling), supports square-bracket captures, and now evaluates tab-indented `if` blocks in scripts. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** string quoting rules (e.g., `"foo $[pwd]"`), argument parser that respects atomic variables/`...`, `for`/`foreach` control flow, newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures, handles `$[]`/`$()` captures inside double-quoted strings, and evaluates tab-indented `if` blocks in scripts. Integration fixtures cover the current surface area (`cargo test`).
+- **Next up:** argument parser that respects atomic variables/`...`, `for`/`foreach` control flow, newline trimming toggles, and the expansion handler contract.
 
 ## Features
 
@@ -41,6 +41,13 @@ Tokens that start with `[` and contain more than one character run as captures: 
 ```bash
 cp [which python3] ./bin/python-system
 hash="sha256:[sha256sum Cargo.lock]"
+```
+
+### Double-Quoted Strings & Capture Interpolation
+**Difficulty:** Medium  
+Double quotes group tokens without splitting, allow escaping via `\"`, and support inline captures using `$[]` or `$()`. Anything else (including bare `[]`) remains literal inside strings. The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting.
+```bash
+echo "hello $[echo world]" "$[pwd]"
 ```
 
 ### Configurable Trailing-Newline Trimming

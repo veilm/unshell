@@ -88,11 +88,28 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     let mut current = String::new();
     let mut bracket_depth = 0;
-
+    let mut in_double = false;
+    let mut current_quoted = false;
     let mut chars = line.chars().peekable();
+
     while let Some(ch) = chars.next() {
         match ch {
-            '[' if bracket_depth == 0 && current.is_empty() => {
+            '"' if bracket_depth == 0 && !in_double => {
+                if !current.is_empty() {
+                    return Err("unexpected quote inside token".into());
+                }
+                in_double = true;
+                current_quoted = true;
+            }
+            '"' if in_double => {
+                in_double = false;
+            }
+            '\\' if in_double => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                }
+            }
+            '[' if !in_double && bracket_depth == 0 && current.is_empty() => {
                 bracket_depth = 1;
                 current.push(ch);
             }
@@ -105,17 +122,22 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 current.push(ch);
 
                 if bracket_depth == 0 {
-                    // require next separator or end
                     if let Some(next) = chars.peek() {
-                        if !next.is_whitespace() {
-                            return Err("capture must be followed by whitespace".into());
+                        if !next.is_whitespace() && *next != ')' {
+                            return Err("capture must be followed by whitespace or )".into());
                         }
                     }
                 }
             }
-            c if c.is_whitespace() && bracket_depth == 0 => {
+            c if c.is_whitespace() && bracket_depth == 0 && !in_double => {
                 if !current.is_empty() {
-                    args.push(std::mem::take(&mut current));
+                    if current_quoted {
+                        args.push(format!("\"{current}\""));
+                    } else {
+                        args.push(std::mem::take(&mut current));
+                    }
+                    current.clear();
+                    current_quoted = false;
                 }
             }
             c => current.push(c),
@@ -126,8 +148,16 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
         return Err("unterminated capture group".into());
     }
 
+    if in_double {
+        return Err("unterminated string".into());
+    }
+
     if !current.is_empty() {
-        args.push(current);
+        if current_quoted {
+            args.push(format!("\"{current}\""));
+        } else {
+            args.push(current);
+        }
     }
 
     Ok(args)
@@ -137,11 +167,16 @@ fn expand_tokens(tokens: Vec<String>) -> Result<Vec<String>, String> {
     let mut expanded = Vec::new();
 
     for token in tokens {
-        if is_capture(&token) {
-            match run_capture(&token) {
-                Ok(value) => expanded.push(value),
-                Err(err) => return Err(format!("capture failed: {err}")),
+        if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+            match expand_string_literal(&token[1..token.len() - 1]) {
+                Ok(parts) => expanded.extend(parts),
+                Err(err) => return Err(format!("string expansion failed: {err}")),
             }
+            continue;
+        }
+
+        if let Some(value) = try_capture(&token)? {
+            expanded.push(value);
         } else {
             expanded.push(token);
         }
@@ -150,12 +185,106 @@ fn expand_tokens(tokens: Vec<String>) -> Result<Vec<String>, String> {
     Ok(expanded)
 }
 
-fn is_capture(token: &str) -> bool {
-    token.starts_with('[') && token.ends_with(']') && token.len() > 2
+fn expand_string_literal(body: &str) -> Result<Vec<String>, String> {
+    let mut result = String::new();
+    let mut captures = Vec::new();
+    let mut chars = body.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '$' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                let capture = read_capture(&mut chars)?;
+                let value =
+                    run_capture(&capture).map_err(|err| format!("capture failed: {err}"))?;
+                result.push_str(&value);
+            } else if chars.peek() == Some(&'(') {
+                chars.next();
+                let capture = read_until_closing(&mut chars, ')')?;
+                let value =
+                    run_capture(&capture).map_err(|err| format!("capture failed: {err}"))?;
+                result.push_str(&value);
+            } else {
+                result.push(ch);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    captures.push(result);
+    Ok(captures)
 }
 
-fn run_capture(token: &str) -> io::Result<String> {
-    let inner = token.get(1..token.len() - 1).unwrap_or_default().trim();
+fn read_capture<I>(chars: &mut I) -> Result<String, String>
+where
+    I: Iterator<Item = char>,
+{
+    let mut depth = 1;
+    let mut content = String::new();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '[' => {
+                depth += 1;
+                content.push(ch);
+            }
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(content);
+                }
+                content.push(ch);
+            }
+            _ => content.push(ch),
+        }
+    }
+
+    Err("unterminated capture in string".into())
+}
+
+fn read_until_closing<I>(chars: &mut I, closing: char) -> Result<String, String>
+where
+    I: Iterator<Item = char>,
+{
+    let mut depth = 1;
+    let mut content = String::new();
+
+    while let Some(ch) = chars.next() {
+        if ch == closing {
+            depth -= 1;
+            if depth == 0 {
+                return Ok(content);
+            }
+        } else if ch == '(' && closing == ')' {
+            depth += 1;
+        }
+        content.push(ch);
+    }
+
+    Err("unterminated command substitution".into())
+}
+
+fn try_capture(token: &str) -> Result<Option<String>, String> {
+    if token.starts_with('[') && token.ends_with(']') && token.len() > 2 {
+        run_capture(&token[1..token.len() - 1])
+            .map(Some)
+            .map_err(|err| format!("capture failed: {err}"))
+    } else if token.starts_with("$[") && token.ends_with(']') {
+        run_capture(&token[2..token.len() - 1])
+            .map(Some)
+            .map_err(|err| format!("capture failed: {err}"))
+    } else if token.starts_with("$(") && token.ends_with(')') {
+        run_capture(&token[2..token.len() - 1])
+            .map(Some)
+            .map_err(|err| format!("capture failed: {err}"))
+    } else {
+        Ok(None)
+    }
+}
+
+fn run_capture(body: &str) -> io::Result<String> {
+    let inner = body.trim();
     if inner.is_empty() {
         return Ok(String::new());
     }
