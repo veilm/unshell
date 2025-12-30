@@ -1,0 +1,5 @@
+set expansions.characters "{" on
+set expansions.handler python3 scripts/expansion_handler.py
+echo file{a,b}.txt
+set expansions.characters "{" off
+echo file{a,b}.txt

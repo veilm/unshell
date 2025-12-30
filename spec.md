@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, and `&&` chaining, ships `cd`, `export`, `alias`, `unalias`, and `set` built-ins, and supports recursive/global alias expansion controls. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** newline trimming toggles and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, and `&&` chaining, ships `cd`, `export`, `alias`, `unalias`, and `set` built-ins, supports recursive/global alias expansion controls, toggles capture newline trimming, and delegates token expansion to external handlers. Integration fixtures cover the current surface area (`cargo test`).
+- **Next up:** expansion handler ergonomics (error reporting, richer examples).
 
 ## Features
 
@@ -59,6 +59,7 @@ Because many programs emit terminal newlines, captures strip exactly one trailin
 set subshells.trim_newline false
 printf "[cat banner.bin]"
 ```
+**Current implementation:** `set subshells.trim_newline true|false` controls whether capture output removes a single trailing newline.
 
 ### Explicit `eval` Command
 **Difficulty:** Easy  
@@ -124,6 +125,7 @@ echo foo@bar{.txt,.log}
 # -> shell calls: ush-expand --mode glob "foo@bar{.txt,.log}"
 # -> handler prints JSON array such as ["foo@bar.txt","foo@bar.log"]
 ```
+**Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of strings to splice into the argument list.
 
 ### External String & Quoting Utilities
 **Difficulty:** Medium  

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -282,6 +282,9 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
 
 struct ShellOptions {
     aliases_recursive: bool,
+    subshells_trim_newline: bool,
+    expansions_chars: HashSet<char>,
+    expansions_handler: Vec<String>,
 }
 
 struct AliasEntry {
@@ -302,6 +305,9 @@ impl ShellState {
             aliases: HashMap::new(),
             options: ShellOptions {
                 aliases_recursive: true,
+                subshells_trim_newline: true,
+                expansions_chars: HashSet::new(),
+                expansions_handler: Vec::new(),
             },
         }
     }
@@ -409,6 +415,17 @@ fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)>
         write_bool(&mut file, value.global)?;
     }
     write_bool(&mut file, state.options.aliases_recursive)?;
+    write_bool(&mut file, state.options.subshells_trim_newline)?;
+    let mut chars: Vec<char> = state.options.expansions_chars.iter().copied().collect();
+    chars.sort_unstable();
+    let chars_string: String = chars.into_iter().collect();
+    write_u32(&mut file, chars_string.len() as u32)?;
+    file.write_all(chars_string.as_bytes())?;
+    write_u32(&mut file, state.options.expansions_handler.len() as u32)?;
+    for value in state.options.expansions_handler.iter() {
+        write_u32(&mut file, value.len() as u32)?;
+        file.write_all(value.as_bytes())?;
+    }
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -446,6 +463,24 @@ fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         state.set_alias(&name, value, global);
     }
     state.options.aliases_recursive = read_bool(&mut file)?;
+    state.options.subshells_trim_newline = read_bool(&mut file)?;
+    let chars_len = read_u32(&mut file)? as usize;
+    let mut chars_buf = vec![0u8; chars_len];
+    file.read_exact(&mut chars_buf)?;
+    let chars = String::from_utf8(chars_buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "expansion chars not utf-8"))?;
+    state.options.expansions_chars = chars.chars().collect();
+    let handler_len = read_u32(&mut file)? as usize;
+    state.options.expansions_handler = Vec::with_capacity(handler_len);
+    for _ in 0..handler_len {
+        let value_len = read_u32(&mut file)? as usize;
+        let mut value_buf = vec![0u8; value_len];
+        file.read_exact(&mut value_buf)?;
+        let value = String::from_utf8(value_buf).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "expansion handler not utf-8")
+        })?;
+        state.options.expansions_handler.push(value);
+    }
     Ok(state)
 }
 
@@ -684,13 +719,16 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             Ok(Some(RunResult::Success(true)))
         }
         "set" => {
-            if args.len() != 3 {
+            if args.len() < 3 {
                 return Err("set: expected KEY VALUE".into());
             }
             let key = &args[1];
-            let value = &args[2];
             match key.as_str() {
                 "aliases.recursive" => {
+                    if args.len() != 3 {
+                        return Err("set: aliases.recursive expects a value".into());
+                    }
+                    let value = &args[2];
                     let enabled = match value.as_str() {
                         "true" => true,
                         "false" => false,
@@ -701,6 +739,53 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         }
                     };
                     state.options.aliases_recursive = enabled;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "subshells.trim_newline" => {
+                    if args.len() != 3 {
+                        return Err("set: subshells.trim_newline expects a value".into());
+                    }
+                    let value = &args[2];
+                    let enabled = match value.as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(
+                                "set: subshells.trim_newline expects 'true' or 'false'".into(),
+                            )
+                        }
+                    };
+                    state.options.subshells_trim_newline = enabled;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "expansions.characters" => {
+                    if args.len() != 4 {
+                        return Err("set: expansions.characters expects CHARS on|off".into());
+                    }
+                    let chars = &args[2];
+                    let enabled = match args[3].as_str() {
+                        "on" => true,
+                        "off" => false,
+                        _ => {
+                            return Err(
+                                "set: expansions.characters expects 'on' or 'off'".into(),
+                            )
+                        }
+                    };
+                    for ch in chars.chars() {
+                        if enabled {
+                            state.options.expansions_chars.insert(ch);
+                        } else {
+                            state.options.expansions_chars.remove(&ch);
+                        }
+                    }
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "expansions.handler" => {
+                    if args.len() < 3 {
+                        return Err("set: expansions.handler expects a command".into());
+                    }
+                    state.options.expansions_handler = args[2..].to_vec();
                     Ok(Some(RunResult::Success(true)))
                 }
                 _ => Err(format!("set: unknown option '{key}'")),
@@ -1716,10 +1801,113 @@ fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>,
             continue;
         }
 
-        expanded.push(expand_unquoted_token(&token, state)?);
+        let value = expand_unquoted_token(&token, state)?;
+        if should_expand_with_handler(&value, state) {
+            let replacements = run_expansion_handler(&value, state)?;
+            expanded.extend(replacements);
+        } else {
+            expanded.push(value);
+        }
     }
 
     Ok(expanded)
+}
+
+fn should_expand_with_handler(token: &str, state: &ShellState) -> bool {
+    if state.options.expansions_chars.is_empty() {
+        return false;
+    }
+    token.chars().any(|ch| state.options.expansions_chars.contains(&ch))
+}
+
+fn run_expansion_handler(token: &str, state: &ShellState) -> Result<Vec<String>, String> {
+    if state.options.expansions_handler.is_empty() {
+        return Err("expansion handler not configured".into());
+    }
+    let mut cmd = Command::new(&state.options.expansions_handler[0]);
+    if state.options.expansions_handler.len() > 1 {
+        cmd.args(&state.options.expansions_handler[1..]);
+    }
+    let output = cmd
+        .arg(token)
+        .output()
+        .map_err(|err| format!("failed to execute expansion handler: {err}"))?;
+    if !output.status.success() {
+        return Err("expansion handler failed".into());
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "expansion handler output not utf-8".to_string())?;
+    parse_json_string_array(&text)
+}
+
+fn parse_json_string_array(input: &str) -> Result<Vec<String>, String> {
+    let mut chars = input.chars().peekable();
+    skip_json_ws(&mut chars);
+    if chars.next() != Some('[') {
+        return Err("expansion handler output must be a JSON array".into());
+    }
+    let mut items = Vec::new();
+
+    loop {
+        skip_json_ws(&mut chars);
+        match chars.peek() {
+            Some(']') => {
+                chars.next();
+                break;
+            }
+            Some('"') => {
+                chars.next();
+                let value = parse_json_string(&mut chars)?;
+                items.push(value);
+                skip_json_ws(&mut chars);
+                match chars.peek() {
+                    Some(',') => {
+                        chars.next();
+                    }
+                    Some(']') => {
+                        chars.next();
+                        break;
+                    }
+                    _ => return Err("expansion handler output malformed".into()),
+                }
+            }
+            _ => return Err("expansion handler output malformed".into()),
+        }
+    }
+
+    Ok(items)
+}
+
+fn skip_json_ws<I: Iterator<Item = char>>(chars: &mut std::iter::Peekable<I>) {
+    while matches!(chars.peek(), Some(ch) if ch.is_whitespace()) {
+        chars.next();
+    }
+}
+
+fn parse_json_string<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+) -> Result<String, String> {
+    let mut result = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Ok(result),
+            '\\' => {
+                let escaped = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                match escaped {
+                    '"' => result.push('"'),
+                    '\\' => result.push('\\'),
+                    'n' => result.push('\n'),
+                    't' => result.push('\t'),
+                    'r' => result.push('\r'),
+                    'b' => result.push('\u{0008}'),
+                    'f' => result.push('\u{000C}'),
+                    _ => return Err("unsupported json escape".into()),
+                }
+            }
+            other => result.push(other),
+        }
+    }
+    Err("unterminated json string".into())
 }
 
 fn expand_unquoted_token(token: &str, state: &ShellState) -> Result<String, String> {
@@ -1972,14 +2160,14 @@ fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
         .output()?;
 
     io::stderr().write_all(&output.stderr)?;
-    trim_capture_output(output)
+    trim_capture_output(output, state.options.subshells_trim_newline)
 }
 
-fn trim_capture_output(output: Output) -> io::Result<String> {
+fn trim_capture_output(output: Output, trim_newline: bool) -> io::Result<String> {
     let mut text = String::from_utf8(output.stdout)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "capture output not utf-8"))?;
 
-    if text.ends_with('\n') {
+    if trim_newline && text.ends_with('\n') {
         text.pop();
         if text.ends_with('\r') {
             text.pop();
