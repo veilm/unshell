@@ -1,0 +1,4 @@
+printf '%s\n' a b | foreach item {
+	echo "item:$item"
+}
+echo done

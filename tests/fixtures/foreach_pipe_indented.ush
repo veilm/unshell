@@ -1,0 +1,3 @@
+printf '%s\n' 1 2 3 | foreach line
+	echo $line
+echo done

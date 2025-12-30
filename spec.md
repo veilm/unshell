@@ -101,7 +101,7 @@ for server in ...[cat servers.list | quote]
 
 ### Stream Loops: `foreach`
 **Difficulty:** Hard  
-`cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the indented block for each row. The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything. `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell.
+`cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the block for each row. The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything. `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell. Tab-indented blocks are only allowed when `foreach` is the final pipeline stage; use braces to continue piping.
 ```bash
 ls -1 | foreach file
 	cp $file ../backup/
