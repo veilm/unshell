@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -20,6 +21,7 @@ fn main() {
 fn run_repl() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut state = ShellState::new();
 
     loop {
         if print_prompt(&mut stdout).is_err() {
@@ -30,7 +32,7 @@ fn run_repl() {
         match stdin.read_line(&mut line) {
             Ok(0) => break, // EOF
             Ok(_) => {
-                if !process_line(&line) {
+                if !process_line(&line, &mut state) {
                     break;
                 }
             }
@@ -47,14 +49,17 @@ fn run_script(path: &str) -> io::Result<()> {
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut ctx = ScriptContext { lines };
+    let mut ctx = ScriptContext {
+        lines,
+        state: ShellState::new(),
+    };
     ctx.execute()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
 
     Ok(())
 }
 
-fn process_line(line: &str) -> bool {
+fn process_line(line: &str, state: &mut ShellState) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return true;
@@ -72,7 +77,7 @@ fn process_line(line: &str) -> bool {
         }
     };
 
-    let expanded = match expand_tokens(args) {
+    let expanded = match expand_tokens(args, state) {
         Ok(args) => args,
         Err(err) => {
             eprintln!("unshell: {err}");
@@ -80,7 +85,84 @@ fn process_line(line: &str) -> bool {
         }
     };
 
-    execute(&expanded);
+    let (assignments, remaining) = split_assignments(&expanded);
+    for (name, value) in assignments {
+        state.set_var(&name, value);
+    }
+
+    if remaining.is_empty() {
+        return true;
+    }
+
+    if remaining.len() == 1 && remaining[0] == "exit" {
+        return false;
+    }
+
+    execute(remaining);
+    true
+}
+
+struct ShellState {
+    vars: HashMap<String, String>,
+}
+
+impl ShellState {
+    fn new() -> Self {
+        Self {
+            vars: HashMap::new(),
+        }
+    }
+
+    fn set_var(&mut self, name: &str, value: String) {
+        self.vars.insert(name.to_string(), value);
+    }
+}
+
+fn split_assignments(tokens: &[String]) -> (Vec<(String, String)>, &[String]) {
+    let mut assignments = Vec::new();
+    let mut idx = 0;
+
+    while idx < tokens.len() {
+        if let Some((name, value)) = parse_assignment(&tokens[idx]) {
+            assignments.push((name, value));
+            idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    (assignments, &tokens[idx..])
+}
+
+fn parse_assignment(token: &str) -> Option<(String, String)> {
+    let mut parts = token.splitn(2, '=');
+    let name = parts.next()?;
+    let value = parts.next()?;
+
+    if !is_valid_var_name(name) {
+        return None;
+    }
+
+    Some((name.to_string(), value.to_string()))
+}
+
+fn is_valid_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let first = match chars.next() {
+        Some(ch) => ch,
+        None => return false,
+    };
+
+    if !is_var_start(first) {
+        return false;
+    }
+
+    for ch in chars {
+        if !is_var_char(ch) {
+            return false;
+        }
+    }
+
     true
 }
 
@@ -109,7 +191,7 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                     current.push(next);
                 }
             }
-            '[' if !in_double && bracket_depth == 0 && current.is_empty() => {
+            '[' if !in_double && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
                     current.push(ch);
                 } else {
@@ -124,14 +206,6 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
             ']' if bracket_depth > 0 => {
                 bracket_depth -= 1;
                 current.push(ch);
-
-                if bracket_depth == 0 {
-                    if let Some(next) = chars.peek() {
-                        if !next.is_whitespace() && *next != ')' {
-                            return Err("capture must be followed by whitespace or )".into());
-                        }
-                    }
-                }
             }
             c if c.is_whitespace() && bracket_depth == 0 && !in_double => {
                 if !current.is_empty() {
@@ -167,29 +241,77 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
-fn expand_tokens(tokens: Vec<String>) -> Result<Vec<String>, String> {
+fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
     let mut expanded = Vec::new();
 
     for token in tokens {
         if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
-            match expand_string_literal(&token[1..token.len() - 1]) {
+            match expand_string_literal(&token[1..token.len() - 1], state) {
                 Ok(parts) => expanded.extend(parts),
                 Err(err) => return Err(format!("string expansion failed: {err}")),
             }
             continue;
         }
 
-        if let Some(value) = try_capture(&token)? {
-            expanded.push(value);
-        } else {
-            expanded.push(token);
-        }
+        expanded.push(expand_unquoted_token(&token, state)?);
     }
 
     Ok(expanded)
 }
 
-fn expand_string_literal(body: &str) -> Result<Vec<String>, String> {
+fn expand_unquoted_token(token: &str, state: &ShellState) -> Result<String, String> {
+    let chars: Vec<char> = token.chars().collect();
+    let mut result = String::new();
+    let mut idx = 0;
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+
+        if ch == '$' && idx + 1 < chars.len() {
+            let next = chars[idx + 1];
+            if next == '[' {
+                if let Some((capture, next_idx)) = read_bracket_capture_chars(&chars, idx + 2) {
+                    let value = run_capture(&capture, state)
+                        .map_err(|err| format!("capture failed: {err}"))?;
+                    result.push_str(&value);
+                    idx = next_idx;
+                    continue;
+                }
+            } else if next == '(' {
+                if let Some((capture, next_idx)) = read_paren_capture_chars(&chars, idx + 2) {
+                    let value = run_capture(&capture, state)
+                        .map_err(|err| format!("capture failed: {err}"))?;
+                    result.push_str(&value);
+                    idx = next_idx;
+                    continue;
+                }
+            } else if is_var_start(next) {
+                let (name, next_idx) = read_var_name(&chars, idx + 1);
+                let value = lookup_var(state, &name);
+                result.push_str(&value);
+                idx = next_idx;
+                continue;
+            }
+        }
+
+        if ch == '[' {
+            if let Some((capture, next_idx)) = read_bracket_capture_chars(&chars, idx + 1) {
+                let value = run_capture(&capture, state)
+                    .map_err(|err| format!("capture failed: {err}"))?;
+                result.push_str(&value);
+                idx = next_idx;
+                continue;
+            }
+        }
+
+        result.push(ch);
+        idx += 1;
+    }
+
+    Ok(result)
+}
+
+fn expand_string_literal(body: &str, state: &ShellState) -> Result<Vec<String>, String> {
     let mut result = String::new();
     let mut captures = Vec::new();
     let mut chars = body.chars().peekable();
@@ -200,13 +322,13 @@ fn expand_string_literal(body: &str) -> Result<Vec<String>, String> {
                 chars.next();
                 let capture = read_capture(&mut chars)?;
                 let value =
-                    run_capture(&capture).map_err(|err| format!("capture failed: {err}"))?;
+                    run_capture(&capture, state).map_err(|err| format!("capture failed: {err}"))?;
                 result.push_str(&value);
             } else if chars.peek() == Some(&'(') {
                 chars.next();
                 let capture = read_until_closing(&mut chars, ')')?;
                 let value =
-                    run_capture(&capture).map_err(|err| format!("capture failed: {err}"))?;
+                    run_capture(&capture, state).map_err(|err| format!("capture failed: {err}"))?;
                 result.push_str(&value);
             } else {
                 result.push(ch);
@@ -218,6 +340,79 @@ fn expand_string_literal(body: &str) -> Result<Vec<String>, String> {
 
     captures.push(result);
     Ok(captures)
+}
+
+fn read_bracket_capture_chars(chars: &[char], mut idx: usize) -> Option<(String, usize)> {
+    let mut depth = 1;
+    let mut content = String::new();
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if ch == '[' {
+            depth += 1;
+            content.push(ch);
+        } else if ch == ']' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((content, idx + 1));
+            }
+            content.push(ch);
+        } else {
+            content.push(ch);
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn read_paren_capture_chars(chars: &[char], mut idx: usize) -> Option<(String, usize)> {
+    let mut depth = 1;
+    let mut content = String::new();
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+        if ch == '(' {
+            depth += 1;
+            content.push(ch);
+        } else if ch == ')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((content, idx + 1));
+            }
+            content.push(ch);
+        } else {
+            content.push(ch);
+        }
+        idx += 1;
+    }
+
+    None
+}
+
+fn read_var_name(chars: &[char], start: usize) -> (String, usize) {
+    let mut idx = start + 1;
+    while idx < chars.len() && is_var_char(chars[idx]) {
+        idx += 1;
+    }
+    let name: String = chars[start..idx].iter().collect();
+    (name, idx)
+}
+
+fn is_var_start(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphabetic()
+}
+
+fn is_var_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn lookup_var(state: &ShellState, name: &str) -> String {
+    if let Some(value) = state.vars.get(name) {
+        return value.clone();
+    }
+
+    env::var(name).unwrap_or_default()
 }
 
 fn read_capture<I>(chars: &mut I) -> Result<String, String>
@@ -269,31 +464,19 @@ where
     Err("unterminated command substitution".into())
 }
 
-fn try_capture(token: &str) -> Result<Option<String>, String> {
-    if token.starts_with('[') && token.ends_with(']') && token.len() > 2 {
-        run_capture(&token[1..token.len() - 1])
-            .map(Some)
-            .map_err(|err| format!("capture failed: {err}"))
-    } else if token.starts_with("$[") && token.ends_with(']') {
-        run_capture(&token[2..token.len() - 1])
-            .map(Some)
-            .map_err(|err| format!("capture failed: {err}"))
-    } else if token.starts_with("$(") && token.ends_with(')') {
-        run_capture(&token[2..token.len() - 1])
-            .map(Some)
-            .map_err(|err| format!("capture failed: {err}"))
-    } else {
-        Ok(None)
-    }
-}
-
-fn run_capture(body: &str) -> io::Result<String> {
+fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
     let inner = body.trim();
     if inner.is_empty() {
         return Ok(String::new());
     }
 
     let args = parse_args(inner).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    if args.is_empty() {
+        return Ok(String::new());
+    }
+
+    let args = expand_tokens(args, state)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     if args.is_empty() {
         return Ok(String::new());
     }
@@ -318,6 +501,7 @@ fn trim_capture_output(output: Output) -> io::Result<String> {
 
 struct ScriptContext {
     lines: Vec<String>,
+    state: ShellState,
 }
 
 struct BlockResult {
@@ -381,7 +565,7 @@ impl ScriptContext {
                 continue;
             }
 
-            if should_execute && !process_line(trimmed) {
+            if should_execute && !process_line(trimmed, &mut self.state) {
                 return Ok(BlockResult {
                     next: idx + 1,
                     exit: true,
@@ -402,7 +586,7 @@ impl ScriptContext {
         if args.is_empty() {
             return Ok(false);
         }
-        let expanded = expand_tokens(args)?;
+        let expanded = expand_tokens(args, &self.state)?;
 
         match Command::new(&expanded[0]).args(&expanded[1..]).status() {
             Ok(status) => Ok(status.success()),

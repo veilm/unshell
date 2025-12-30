@@ -6,8 +6,8 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures, handles `$[]`/`$()` captures inside double-quoted strings, and evaluates tab-indented `if` blocks in scripts. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** argument parser that respects atomic variables/`...`, `for`/`foreach` control flow, newline trimming toggles, and the expansion handler contract.
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if` blocks in scripts, and provides atomic variable assignment/expansion. Integration fixtures cover the current surface area (`cargo test`).
+- **Next up:** `...` spread operator, `for`/`foreach` control flow, newline trimming toggles, and the expansion handler contract.
 
 ## Features
 
@@ -20,7 +20,7 @@ ls /var/log | grep error | tail -n 20
 
 ### Atomic Variables & Assignment
 **Difficulty:** Medium  
-`$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion.
+`$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion. **Current implementation:** leading `name=value` tokens set shell-local variables (no command runs if only assignments are present), `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
 ```bash
 path="My Projects/unshell"
 cd $path          # treated as one argument
@@ -37,7 +37,7 @@ ls ...$files
 
 ### Command Substitution with Square Brackets
 **Difficulty:** Medium  
-Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[`. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line.
+Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[` and `[ ]` stays literal. Unquoted tokens can concatenate captures with surrounding text (e.g., `foo-[echo bar]`), and captures may nest (e.g., `[echo [pwd]]`). To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line.
 ```bash
 cp [which python3] ./bin/python-system
 hash="sha256:[sha256sum Cargo.lock]"

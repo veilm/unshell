@@ -1,0 +1,6 @@
+echo [echo hi]y
+echo foo-[echo bar]
+echo "foo-[echo bar]"
+echo [echo [pwd]]
+echo [ ]
+echo $[echo ok]
