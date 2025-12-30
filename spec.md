@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** Minimal Rust REPL that reads lines, runs commands via `$PATH`, prints a prompt, and supports `exit`.
+- **Implemented:** `ush` binary builds via Cargo/Makefile, offers a simple REPL, and can execute plaintext scripts line-by-line with `ush path/to/script`.
 - **Next up:** argument parser that respects atomic variables/`...`, square-bracket captures, control-flow keywords (`if`, `for`, `foreach`), newline trimming toggles, and the expansion handler contract.
 
 ## Features
