@@ -2,7 +2,9 @@ if test -n foo { echo yes }
 for item in one two { echo $item }
 printf '%s\n' alpha "beta gamma" | foreach item { echo $item }
 
-# if true {
-# 	echo test
-# 	pwd
-# 	date
+if true {
+	echo test
+	echo [pwd]
+
+	if test foo {echo 1}
+}

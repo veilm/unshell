@@ -482,7 +482,13 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
     parts
 }
 
-fn split_brace_block(line: &str) -> (&str, Option<String>) {
+enum BraceParse {
+    Inline { head: String, body: String },
+    Open { head: String, tail: String },
+    None { head: String },
+}
+
+fn parse_brace_block(line: &str) -> BraceParse {
     let bytes = line.as_bytes();
     let mut idx = 0;
     let mut in_double = false;
@@ -551,7 +557,11 @@ fn split_brace_block(line: &str) -> (&str, Option<String>) {
 
     let brace_start = match brace_start {
         Some(pos) => pos,
-        None => return (line, None),
+        None => {
+            return BraceParse::None {
+                head: line.to_string(),
+            }
+        }
     };
 
     let mut brace_depth = 0;
@@ -633,12 +643,16 @@ fn split_brace_block(line: &str) -> (&str, Option<String>) {
 
     let end = match end {
         Some(pos) => pos,
-        None => return (line, None),
+        None => {
+            let head = line[..brace_start].trim_end().to_string();
+            let tail = line[brace_start + 1..].trim().to_string();
+            return BraceParse::Open { head, tail };
+        }
     };
 
-    let head = line[..brace_start].trim_end();
-    let body = line[brace_start + 1..end].trim();
-    (head, Some(body.to_string()))
+    let head = line[..brace_start].trim_end().to_string();
+    let body = line[brace_start + 1..end].trim().to_string();
+    BraceParse::Inline { head, body }
 }
 
 fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), String> {
@@ -654,7 +668,122 @@ fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), Strin
     Ok(())
 }
 
-fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>, Option<String>)> {
+fn collect_brace_block(
+    lines: &[String],
+    start_idx: usize,
+    tail: Option<String>,
+) -> Result<(Vec<String>, usize), String> {
+    let mut block_lines = Vec::new();
+    if let Some(tail) = tail {
+        if !tail.is_empty() {
+            block_lines.push(tail);
+        }
+    }
+
+    let mut brace_depth = 1;
+    let mut idx = start_idx;
+    while idx < lines.len() {
+        let raw = &lines[idx];
+        let trimmed = raw.trim();
+        let mut in_double = false;
+        let mut in_single = false;
+        let mut bracket_depth = 0;
+        let mut paren_depth = 0;
+        let bytes = raw.as_bytes();
+        let mut pos = 0;
+
+        while pos < bytes.len() {
+            let ch = bytes[pos] as char;
+
+            if in_double && ch == '\\' && paren_depth == 0 {
+                pos += 1;
+                if pos < bytes.len() {
+                    pos += 1;
+                }
+                continue;
+            }
+
+            match ch {
+                '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                    in_single = !in_single;
+                }
+                '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                    in_double = !in_double;
+                }
+                '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                    if pos + 1 < bytes.len() && bytes[pos + 1] == b'(' {
+                        paren_depth = 1;
+                        pos += 1;
+                    }
+                }
+                '[' if !in_double && !in_single && bracket_depth == 0 => {
+                    if pos + 1 < bytes.len() && (bytes[pos + 1] as char).is_whitespace() {
+                        // literal [
+                    } else {
+                        bracket_depth = 1;
+                    }
+                }
+                '[' if bracket_depth > 0 => {
+                    bracket_depth += 1;
+                }
+                ']' if bracket_depth > 0 => {
+                    bracket_depth -= 1;
+                }
+                '(' if paren_depth > 0 => {
+                    paren_depth += 1;
+                }
+                ')' if paren_depth > 0 => {
+                    paren_depth -= 1;
+                }
+                '{'
+                    if !in_double
+                        && !in_single
+                        && bracket_depth == 0
+                        && paren_depth == 0 =>
+                {
+                    brace_depth += 1;
+                }
+                '}'
+                    if !in_double
+                        && !in_single
+                        && bracket_depth == 0
+                        && paren_depth == 0 =>
+                {
+                    brace_depth -= 1;
+                    if brace_depth == 0 {
+                        if trimmed != "}" {
+                            return Err("brace block must end with '}' on its own line".into());
+                        }
+                        return Ok((block_lines, idx));
+                    }
+                }
+                _ => {}
+            }
+
+            pos += 1;
+        }
+
+        let mut line = raw.to_string();
+        if line.starts_with('\t') {
+            line = line[1..].to_string();
+        }
+        block_lines.push(line);
+        idx += 1;
+    }
+
+    Err("unterminated brace block".into())
+}
+
+fn parse_foreach_line(
+    line: &str,
+) -> Option<(
+    String,
+    Vec<String>,
+    Vec<String>,
+    Option<String>,
+    bool,
+    Option<String>,
+)> {
     let segments = split_on_pipes(line);
     if segments.len() < 2 {
         return None;
@@ -662,14 +791,23 @@ fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>, O
     let mut foreach_index = None;
     let mut foreach_var = String::new();
     let mut foreach_block = None;
+    let mut foreach_open = false;
+    let mut foreach_tail = None;
 
     for (idx, segment) in segments.iter().enumerate() {
-        let (body, brace_block) = split_brace_block(segment.trim());
-        let args = parse_args(body).ok()?;
+        let brace = parse_brace_block(segment.trim());
+        let (body, brace_block, brace_open, brace_tail) = match brace {
+            BraceParse::Inline { head, body } => (head, Some(body), false, None),
+            BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+            BraceParse::None { head } => (head, None, false, None),
+        };
+        let args = parse_args(&body).ok()?;
         if args.len() == 2 && args[0] == "foreach" {
             foreach_index = Some(idx);
             foreach_var = args[1].clone();
             foreach_block = brace_block;
+            foreach_open = brace_open;
+            foreach_tail = brace_tail;
             break;
         }
     }
@@ -677,7 +815,14 @@ fn parse_foreach_line(line: &str) -> Option<(String, Vec<String>, Vec<String>, O
     let foreach_index = foreach_index?;
     let before = segments[..foreach_index].to_vec();
     let after = segments[foreach_index + 1..].to_vec();
-    Some((foreach_var, before, after, foreach_block))
+    Some((
+        foreach_var,
+        before,
+        after,
+        foreach_block,
+        foreach_open,
+        foreach_tail,
+    ))
 }
 
 fn parse_args(line: &str) -> Result<Vec<String>, String> {
@@ -1108,15 +1253,20 @@ struct BlockResult {
 
 impl<'a> ScriptContext<'a> {
     fn execute(&mut self) -> Result<(), String> {
+        let _ = self.execute_with_exit()?;
+        Ok(())
+    }
+
+    fn execute_with_exit(&mut self) -> Result<bool, String> {
         let mut idx = 0;
         while idx < self.lines.len() {
             let result = self.execute_block(idx, 0, true)?;
             idx = result.next;
             if result.exit {
-                break;
+                return Ok(true);
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn execute_block(
@@ -1143,8 +1293,17 @@ impl<'a> ScriptContext<'a> {
                 return Err(format!("unexpected indent on line {}", idx + 1));
             }
 
+            if trimmed == "}" {
+                return Err("unexpected '}'".into());
+            }
+
             if let Some(rest) = trimmed.strip_prefix("if ") {
-                let (condition, brace_block) = split_brace_block(rest);
+                let brace = parse_brace_block(rest);
+                let (condition, brace_block, brace_open, brace_tail) = match brace {
+                    BraceParse::Inline { head, body } => (head, Some(body), false, None),
+                    BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                    BraceParse::None { head } => (head, None, false, None),
+                };
                 let run_child = if should_execute {
                     self.evaluate_condition(condition.trim())?
                 } else {
@@ -1159,6 +1318,25 @@ impl<'a> ScriptContext<'a> {
                     continue;
                 }
 
+                if brace_open {
+                    let (block_lines, end_idx) =
+                        collect_brace_block(&self.lines, idx + 1, brace_tail)?;
+                    if run_child {
+                        let mut ctx = ScriptContext {
+                            lines: block_lines,
+                            state: self.state,
+                        };
+                        if ctx.execute_with_exit()? {
+                            return Ok(BlockResult {
+                                next: end_idx + 1,
+                                exit: true,
+                            });
+                        }
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+
                 idx += 1;
                 let result =
                     self.execute_block(idx, indent_level + 1, should_execute && run_child)?;
@@ -1170,7 +1348,9 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
-            if let Some((var_name, before, after, brace_block)) = parse_foreach_line(trimmed) {
+            if let Some((var_name, before, after, brace_block, brace_open, brace_tail)) =
+                parse_foreach_line(trimmed)
+            {
                 if !is_valid_var_name(&var_name) {
                     return Err(format!(
                         "invalid foreach variable '{}' on line {}",
@@ -1196,6 +1376,30 @@ impl<'a> ScriptContext<'a> {
                     continue;
                 }
 
+                if brace_open {
+                    let (block_lines, end_idx) =
+                        collect_brace_block(&self.lines, idx + 1, brace_tail)?;
+                    if should_execute {
+                        let commands = build_pipeline_commands(&before, self.state)?;
+                        let output = run_pipeline_capture(commands)?;
+                        for line in output.lines() {
+                            self.state.set_var(&var_name, line.to_string());
+                            let mut ctx = ScriptContext {
+                                lines: block_lines.clone(),
+                                state: self.state,
+                            };
+                            if ctx.execute_with_exit()? {
+                                return Ok(BlockResult {
+                                    next: end_idx + 1,
+                                    exit: true,
+                                });
+                            }
+                        }
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+
                 idx += 1;
                 let block_start = idx;
                 let block_end = self.find_block_end(block_start, indent_level + 1);
@@ -1217,8 +1421,13 @@ impl<'a> ScriptContext<'a> {
             }
 
             if let Some(rest) = trimmed.strip_prefix("for ") {
-                let (body, brace_block) = split_brace_block(rest);
-                let args = parse_args(body)?;
+                let brace = parse_brace_block(rest);
+                let (body, brace_block, brace_open, brace_tail) = match brace {
+                    BraceParse::Inline { head, body } => (head, Some(body), false, None),
+                    BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                    BraceParse::None { head } => (head, None, false, None),
+                };
+                let args = parse_args(&body)?;
                 if args.len() < 3 || args[1] != "in" {
                     return Err(format!("invalid for syntax on line {}", idx + 1));
                 }
@@ -1238,23 +1447,46 @@ impl<'a> ScriptContext<'a> {
                         }
                     }
                     idx += 1;
-                } else {
-                    idx += 1;
-                    let block_start = idx;
-                    let block_end = self.find_block_end(block_start, indent_level + 1);
+                    continue;
+                }
 
+                if brace_open {
+                    let (block_lines, end_idx) =
+                        collect_brace_block(&self.lines, idx + 1, brace_tail)?;
                     if should_execute {
                         for value in list {
                             self.state.set_var(var_name, value);
-                            let result = self.execute_block(block_start, indent_level + 1, true)?;
-                            if result.exit {
-                                return Ok(result);
+                            let mut ctx = ScriptContext {
+                                lines: block_lines.clone(),
+                                state: self.state,
+                            };
+                            if ctx.execute_with_exit()? {
+                                return Ok(BlockResult {
+                                    next: end_idx + 1,
+                                    exit: true,
+                                });
                             }
                         }
                     }
-
-                    idx = block_end;
+                    idx = end_idx + 1;
+                    continue;
                 }
+
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+
+                if should_execute {
+                    for value in list {
+                        self.state.set_var(var_name, value);
+                        let result = self.execute_block(block_start, indent_level + 1, true)?;
+                        if result.exit {
+                            return Ok(result);
+                        }
+                    }
+                }
+
+                idx = block_end;
                 continue;
             }
 

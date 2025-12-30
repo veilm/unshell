@@ -78,7 +78,7 @@ Parentheses still group pipelines without invoking capture semantics, letting us
 
 ### Control Flow Blocks
 **Difficulty:** Hard  
-Blocks are introduced by keywords (`if`, `else`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** an inline brace-delimited block. Authors can mix styles per block, but indentation inside braces is still recommended for clarity. **Current implementation:** tab-indented `if`/`for`/`foreach` blocks within scripts plus inline brace blocks for `if`, `for`, and `foreach` (no `else` yet).
+Blocks are introduced by keywords (`if`, `else`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. **Current implementation:** tab-indented `if`/`for`/`foreach` blocks within scripts plus brace blocks for `if`, `for`, and `foreach` (no `else` yet).
 ```bash
 if test -f config.toml
 	echo "config exists"
