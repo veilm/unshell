@@ -171,17 +171,28 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut current = String::new();
     let mut bracket_depth = 0;
     let mut in_double = false;
-    let mut current_quoted = false;
+    let mut in_single = false;
+    let mut current_quote: Option<char> = None;
     let mut chars = line.chars().peekable();
 
     while let Some(ch) = chars.next() {
         match ch {
+            '\'' if bracket_depth == 0 && !in_double && !in_single => {
+                if !current.is_empty() {
+                    return Err("unexpected quote inside token".into());
+                }
+                in_single = true;
+                current_quote = Some('\'');
+            }
+            '\'' if in_single => {
+                in_single = false;
+            }
             '"' if bracket_depth == 0 && !in_double => {
                 if !current.is_empty() {
                     return Err("unexpected quote inside token".into());
                 }
                 in_double = true;
-                current_quoted = true;
+                current_quote = Some('"');
             }
             '"' if in_double => {
                 in_double = false;
@@ -191,7 +202,7 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                     current.push(next);
                 }
             }
-            '[' if !in_double && bracket_depth == 0 => {
+            '[' if !in_double && !in_single && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
                     current.push(ch);
                 } else {
@@ -207,15 +218,15 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 bracket_depth -= 1;
                 current.push(ch);
             }
-            c if c.is_whitespace() && bracket_depth == 0 && !in_double => {
+            c if c.is_whitespace() && bracket_depth == 0 && !in_double && !in_single => {
                 if !current.is_empty() {
-                    if current_quoted {
-                        args.push(format!("\"{current}\""));
+                    if let Some(quote) = current_quote {
+                        args.push(format!("{quote}{current}{quote}"));
                     } else {
                         args.push(std::mem::take(&mut current));
                     }
                     current.clear();
-                    current_quoted = false;
+                    current_quote = None;
                 }
             }
             c => current.push(c),
@@ -230,9 +241,13 @@ fn parse_args(line: &str) -> Result<Vec<String>, String> {
         return Err("unterminated string".into());
     }
 
+    if in_single {
+        return Err("unterminated string".into());
+    }
+
     if !current.is_empty() {
-        if current_quoted {
-            args.push(format!("\"{current}\""));
+        if let Some(quote) = current_quote {
+            args.push(format!("{quote}{current}{quote}"));
         } else {
             args.push(current);
         }
@@ -245,6 +260,10 @@ fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>,
     let mut expanded = Vec::new();
 
     for token in tokens {
+        if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
+            expanded.push(token[1..token.len() - 1].to_string());
+            continue;
+        }
         if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
             match expand_string_literal(&token[1..token.len() - 1], state) {
                 Ok(parts) => expanded.extend(parts),

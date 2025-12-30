@@ -1,0 +1,5 @@
+x=bar
+echo '$x'
+echo 'foo $x bar'
+echo 'foo $(echo r $x r) end'
+echo '$[echo hi]'

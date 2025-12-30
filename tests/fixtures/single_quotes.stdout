@@ -1,0 +1,4 @@
+$x
+foo $x bar
+foo $(echo r $x r) end
+$[echo hi]
