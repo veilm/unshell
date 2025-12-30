@@ -5,6 +5,10 @@
 - Arguments are atomic unless the user explicitly re-parses data.
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
+## Status
+- **Implemented:** Minimal Rust REPL that reads lines, runs commands via `$PATH`, prints a prompt, and supports `exit`.
+- **Next up:** argument parser that respects atomic variables/`...`, square-bracket captures, control-flow keywords (`if`, `for`, `foreach`), newline trimming toggles, and the expansion handler contract.
+
 ## Features
 
 ### Execution & Pipes
@@ -102,11 +106,11 @@ Globs, brace expansion, or other sigils are delegated to a single user-space hel
 # Example configuration
 set expansions.characters "@" on
 set expansions.characters "{" on
-set expansions.handler esh-expand --mode glob
+set expansions.handler ush-expand --mode glob
 
 # Example handler invocation
 echo foo@bar{.txt,.log}
-# -> shell calls: esh-expand --mode glob "foo@bar{.txt,.log}"
+# -> shell calls: ush-expand --mode glob "foo@bar{.txt,.log}"
 # -> handler prints JSON array such as ["foo@bar.txt","foo@bar.log"]
 ```
 
