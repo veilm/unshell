@@ -1,0 +1,8 @@
+msg=seen
+item=outer
+printf '%s\n' alpha beta | foreach item {
+	echo "$msg:$item"
+	item=inner
+	echo "inner:$item"
+} | foreach line { echo "out:$line" }
+echo "after:$item"

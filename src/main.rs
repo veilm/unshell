@@ -1,11 +1,21 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+
+    if args.len() > 1 && args[1] == "--foreach-worker" {
+        if let Err(err) = run_foreach_worker(&args[2..]) {
+            eprintln!("unshell: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if args.len() > 1 {
         if let Err(err) = run_script(&args[1]) {
@@ -60,6 +70,107 @@ fn run_script(path: &str) -> io::Result<()> {
     Ok(())
 }
 
+struct ForeachWorkerArgs {
+    var: String,
+    block_path: PathBuf,
+    locals_path: PathBuf,
+    inline: bool,
+}
+
+fn run_foreach_worker(args: &[String]) -> Result<(), String> {
+    let opts = parse_foreach_worker_args(args)?;
+    let mut state = read_locals_file(&opts.locals_path)
+        .map_err(|err| format!("failed to load foreach locals: {err}"))?;
+    let block = read_block_file(&opts.block_path)
+        .map_err(|err| format!("failed to load foreach block: {err}"))?;
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let reader = BufReader::new(stdin.lock());
+    let mut exit_requested = false;
+
+    for line in reader.lines() {
+        let mut line = line.map_err(|err| format!("failed to read foreach input: {err}"))?;
+        trim_trailing_newline(&mut line);
+        state.set_var(&opts.var, line);
+        if opts.inline {
+            execute_inline_block(&block, &mut state)?;
+        } else {
+            let mut ctx = ScriptContext {
+                lines: block.lines().map(|s| s.to_string()).collect(),
+                state: &mut state,
+            };
+            if ctx.execute_with_exit()? {
+                exit_requested = true;
+                break;
+            }
+        }
+    }
+
+    stdout.flush().map_err(|err| format!("failed to flush foreach output: {err}"))?;
+
+    if exit_requested {
+        std::process::exit(0);
+    }
+
+    Ok(())
+}
+
+fn parse_foreach_worker_args(args: &[String]) -> Result<ForeachWorkerArgs, String> {
+    let mut var = None;
+    let mut block_path = None;
+    let mut locals_path = None;
+    let mut inline = false;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--var" => {
+                idx += 1;
+                var = args.get(idx).cloned();
+            }
+            "--block" => {
+                idx += 1;
+                block_path = args.get(idx).map(PathBuf::from);
+            }
+            "--locals" => {
+                idx += 1;
+                locals_path = args.get(idx).map(PathBuf::from);
+            }
+            "--inline" => {
+                inline = true;
+            }
+            other => {
+                return Err(format!("unknown foreach worker flag '{other}'"));
+            }
+        }
+        idx += 1;
+    }
+
+    Ok(ForeachWorkerArgs {
+        var: var.ok_or_else(|| "foreach worker missing --var".to_string())?,
+        block_path: block_path.ok_or_else(|| "foreach worker missing --block".to_string())?,
+        locals_path: locals_path.ok_or_else(|| "foreach worker missing --locals".to_string())?,
+        inline,
+    })
+}
+
+fn read_block_file(path: &Path) -> io::Result<String> {
+    let mut file = File::open(path)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+fn trim_trailing_newline(text: &mut String) {
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+}
+
 fn process_line(line: &str, state: &mut ShellState) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -110,6 +221,94 @@ impl ShellState {
     fn set_var(&mut self, name: &str, value: String) {
         self.vars.insert(name.to_string(), value);
     }
+}
+
+struct TempFileGuard {
+    path: PathBuf,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn create_temp_file(prefix: &str) -> io::Result<(PathBuf, File)> {
+    let dir = env::temp_dir();
+    let pid = std::process::id();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+
+    for attempt in 0..1000 {
+        let name = format!("ush-{prefix}-{pid}-{now}-{attempt}");
+        let path = dir.join(name);
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "failed to create temp file",
+    ))
+}
+
+fn write_u32<W: Write>(writer: &mut W, value: u32) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(u32::from_le_bytes(buf))
+}
+
+fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
+    let (path, mut file) = create_temp_file("locals")?;
+    let count = state.vars.len() as u32;
+    write_u32(&mut file, count)?;
+    for (name, value) in state.vars.iter() {
+        write_u32(&mut file, name.len() as u32)?;
+        file.write_all(name.as_bytes())?;
+        write_u32(&mut file, value.len() as u32)?;
+        file.write_all(value.as_bytes())?;
+    }
+    file.flush()?;
+    Ok((path.clone(), TempFileGuard::new(path)))
+}
+
+fn read_locals_file(path: &Path) -> io::Result<ShellState> {
+    let mut file = File::open(path)?;
+    let count = read_u32(&mut file)?;
+    let mut state = ShellState::new();
+    for _ in 0..count {
+        let name_len = read_u32(&mut file)? as usize;
+        let mut name_buf = vec![0u8; name_len];
+        file.read_exact(&mut name_buf)?;
+        let value_len = read_u32(&mut file)? as usize;
+        let mut value_buf = vec![0u8; value_len];
+        file.read_exact(&mut value_buf)?;
+        let name = String::from_utf8(name_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals name not utf-8"))?;
+        let value = String::from_utf8(value_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals value not utf-8"))?;
+        state.set_var(&name, value);
+    }
+    Ok(state)
 }
 
 fn split_assignments(tokens: &[String]) -> (Vec<(String, String)>, &[String]) {
@@ -210,6 +409,64 @@ fn build_pipeline_commands(
     Ok(expanded_commands)
 }
 
+fn build_pipeline_stages_from_segments(
+    segments: &[String],
+    state: &mut ShellState,
+) -> Result<Vec<PipelineStage>, String> {
+    let mut stages = Vec::new();
+
+    for segment in segments {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+
+        if trimmed.starts_with("foreach ") {
+            let brace = parse_brace_block(trimmed);
+            let (head, brace_block, brace_open, brace_tail) = match brace {
+                BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
+                BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                BraceParse::None { head } => (head, None, false, None),
+            };
+            let args = parse_args(&head)?;
+            if args.len() == 2 && args[0] == "foreach" {
+                if brace_open {
+                    return Err(
+                        "foreach blocks in pipeline tails must use inline braces".into(),
+                    );
+                }
+                if let Some(tail) = brace_tail {
+                    return Err(format!(
+                        "unexpected trailing text after foreach block: {tail}"
+                    ));
+                }
+                if let Some(block) = brace_block {
+                    stages.push(PipelineStage::Foreach {
+                        var: args[1].clone(),
+                        block,
+                        inline: true,
+                    });
+                    continue;
+                }
+                return Err("foreach block missing braces in pipeline tail".into());
+            }
+        }
+
+        let args = parse_args(trimmed)?;
+        let expanded = expand_tokens(args, state)?;
+        let (assignments, remaining) = split_assignments(&expanded);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        stages.push(PipelineStage::External(remaining.to_vec()));
+    }
+
+    Ok(stages)
+}
+
 fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
     let mut children = Vec::new();
     let mut prev_stdout: Option<std::process::ChildStdout> = None;
@@ -257,65 +514,117 @@ fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
     Ok(last_success)
 }
 
-fn run_pipeline_capture(commands: Vec<Vec<String>>) -> Result<String, String> {
-    if commands.is_empty() {
-        return Ok(String::new());
+enum PipelineStage {
+    External(Vec<String>),
+    Foreach {
+        var: String,
+        block: String,
+        inline: bool,
+    },
+}
+
+fn write_block_file(block: &str) -> io::Result<(PathBuf, TempFileGuard)> {
+    let (path, mut file) = create_temp_file("block")?;
+    file.write_all(block.as_bytes())?;
+    file.flush()?;
+    Ok((path.clone(), TempFileGuard::new(path)))
+}
+
+fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result<bool, String> {
+    if stages.is_empty() {
+        return Ok(true);
     }
 
+    let foreach_needed = stages
+        .iter()
+        .any(|stage| matches!(stage, PipelineStage::Foreach { .. }));
+    let (locals_path, locals_guard) = if foreach_needed {
+        let (path, guard) =
+            write_locals_file(state).map_err(|err| format!("failed to write locals: {err}"))?;
+        (Some(path), Some(guard))
+    } else {
+        (None, None)
+    };
+
+    let mut block_guards = Vec::new();
     let mut children = Vec::new();
     let mut prev_stdout: Option<std::process::ChildStdout> = None;
-    let last_index = commands.len() - 1;
-    let mut last_name = String::new();
-    let mut last_child = None;
 
-    for (idx, args) in commands.iter().enumerate() {
-        let mut cmd = Command::new(&args[0]);
-        cmd.args(&args[1..]);
+    for (idx, stage) in stages.iter().enumerate() {
+        let mut cmd = match stage {
+            PipelineStage::External(args) => {
+                let mut cmd = Command::new(&args[0]);
+                cmd.args(&args[1..]);
+                cmd
+            }
+            PipelineStage::Foreach { var, block, inline } => {
+                let exe = env::current_exe()
+                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
+                let locals = locals_path
+                    .as_ref()
+                    .ok_or_else(|| "missing locals path for foreach".to_string())?;
+                let (block_path, guard) = write_block_file(block)
+                    .map_err(|err| format!("failed to write foreach block: {err}"))?;
+                block_guards.push(guard);
+                let mut cmd = Command::new(exe);
+                cmd.arg("--foreach-worker")
+                    .arg("--var")
+                    .arg(var)
+                    .arg("--block")
+                    .arg(block_path)
+                    .arg("--locals")
+                    .arg(locals);
+                if *inline {
+                    cmd.arg("--inline");
+                }
+                cmd
+            }
+        };
 
         if let Some(stdout) = prev_stdout.take() {
             cmd.stdin(Stdio::from(stdout));
         }
 
-        cmd.stdout(Stdio::piped());
+        if idx + 1 < stages.len() {
+            cmd.stdout(Stdio::piped());
+        }
 
         let mut child = cmd
             .spawn()
-            .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
+            .map_err(|err| format!("failed to execute pipeline stage: {err}"))?;
 
-        if idx < last_index {
+        if idx + 1 < stages.len() {
             let stdout = child
                 .stdout
                 .take()
                 .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
             prev_stdout = Some(stdout);
-            children.push((args[0].clone(), child));
-        } else {
-            last_name = args[0].clone();
-            last_child = Some(child);
         }
+
+        let name = match stage {
+            PipelineStage::External(args) => args[0].clone(),
+            PipelineStage::Foreach { .. } => "foreach".to_string(),
+        };
+        children.push((name, child));
     }
 
-    for (name, mut child) in children.into_iter() {
+    let mut last_success = true;
+    for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
             .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
         if !status.success() {
             report_status(&name, status);
         }
+        if idx + 1 == stages.len() {
+            last_success = status.success();
+        }
     }
 
-    let output = last_child
-        .ok_or_else(|| "missing final pipeline process".to_string())?
-        .wait_with_output()
-        .map_err(|err| format!("failed to wait for '{}': {err}", last_name))?;
+    drop(block_guards);
+    drop(locals_guard);
 
-    if !output.status.success() {
-        report_status(&last_name, output.status);
-    }
-
-    let text = String::from_utf8(output.stdout)
-        .map_err(|_| "pipeline output not utf-8".to_string())?;
-    Ok(text)
+    Ok(last_success)
 }
 
 fn split_on_semicolons(line: &str) -> Vec<String> {
@@ -324,6 +633,25 @@ fn split_on_semicolons(line: &str) -> Vec<String> {
 
 fn split_on_pipes(line: &str) -> Vec<String> {
     split_by_char(line, '|')
+}
+
+fn append_pipeline_tail(after: &mut Vec<String>, tail: &str) -> Result<(), String> {
+    let trimmed = tail.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let without_pipe = trimmed
+        .strip_prefix('|')
+        .ok_or_else(|| format!("unexpected trailing text after foreach block: {trimmed}"))?;
+    let segments = split_on_pipes(without_pipe);
+    for segment in segments {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        after.push(segment.to_string());
+    }
+    Ok(())
 }
 
 fn split_on_and(line: &str) -> Vec<String> {
@@ -402,6 +730,19 @@ fn split_on_and(line: &str) -> Vec<String> {
 
     parts.push(current);
     parts
+}
+
+fn unindent_block_lines(lines: &[String]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix('\t') {
+                rest.to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect()
 }
 
 fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
@@ -1427,18 +1768,24 @@ impl<'a> ScriptContext<'a> {
                     ));
                 }
 
-                if !after.is_empty() {
-                    return Err("foreach must be the final pipeline stage".into());
-                }
+                let mut after = after;
 
                 if let Some(block) = brace_block {
                     if should_execute {
-                        let commands = build_pipeline_commands(&before, self.state)?;
-                        let output = run_pipeline_capture(commands)?;
-                        for line in output.lines() {
-                            self.state.set_var(&var_name, line.to_string());
-                            execute_inline_block(&block, self.state)?;
+                        let mut stages = Vec::new();
+                        let before_cmds = build_pipeline_commands(&before, self.state)?;
+                        for cmd in before_cmds {
+                            stages.push(PipelineStage::External(cmd));
                         }
+                        stages.push(PipelineStage::Foreach {
+                            var: var_name.clone(),
+                            block,
+                            inline: true,
+                        });
+                        let after_stages =
+                            build_pipeline_stages_from_segments(&after, self.state)?;
+                        stages.extend(after_stages);
+                        run_pipeline_stages(stages, self.state)?;
                     }
                     idx += 1;
                     continue;
@@ -1447,27 +1794,24 @@ impl<'a> ScriptContext<'a> {
                 if brace_open {
                     let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, brace_tail)?;
-                    if should_execute {
-                        let commands = build_pipeline_commands(&before, self.state)?;
-                        let output = run_pipeline_capture(commands)?;
-                        for line in output.lines() {
-                            self.state.set_var(&var_name, line.to_string());
-                            let mut ctx = ScriptContext {
-                                lines: block_lines.clone(),
-                                state: self.state,
-                            };
-                            if ctx.execute_with_exit()? {
-                                return Ok(BlockResult {
-                                    next: end_idx + 1,
-                                    exit: true,
-                                });
-                            }
-                        }
+                    if let Some(tail) = tail_line.as_deref() {
+                        append_pipeline_tail(&mut after, tail)?;
                     }
-                    if let Some(tail) = tail_line {
-                        return Err(format!(
-                            "unexpected trailing text after foreach block: {tail}"
-                        ));
+                    if should_execute {
+                        let mut stages = Vec::new();
+                        let before_cmds = build_pipeline_commands(&before, self.state)?;
+                        for cmd in before_cmds {
+                            stages.push(PipelineStage::External(cmd));
+                        }
+                        stages.push(PipelineStage::Foreach {
+                            var: var_name.clone(),
+                            block: block_lines.join("\n"),
+                            inline: false,
+                        });
+                        let after_stages =
+                            build_pipeline_stages_from_segments(&after, self.state)?;
+                        stages.extend(after_stages);
+                        run_pipeline_stages(stages, self.state)?;
                     }
                     idx = end_idx + 1;
                     continue;
@@ -1476,17 +1820,24 @@ impl<'a> ScriptContext<'a> {
                 idx += 1;
                 let block_start = idx;
                 let block_end = self.find_block_end(block_start, indent_level + 1);
+                if !after.is_empty() {
+                    return Err("foreach blocks without braces cannot be piped onward".into());
+                }
 
                 if should_execute {
-                    let commands = build_pipeline_commands(&before, self.state)?;
-                    let output = run_pipeline_capture(commands)?;
-                    for line in output.lines() {
-                        self.state.set_var(&var_name, line.to_string());
-                        let result = self.execute_block(block_start, indent_level + 1, true)?;
-                        if result.exit {
-                            return Ok(result);
-                        }
+                    let mut stages = Vec::new();
+                    let before_cmds = build_pipeline_commands(&before, self.state)?;
+                    for cmd in before_cmds {
+                        stages.push(PipelineStage::External(cmd));
                     }
+                    let raw_lines = self.lines[block_start..block_end].to_vec();
+                    let block_lines = unindent_block_lines(&raw_lines);
+                    stages.push(PipelineStage::Foreach {
+                        var: var_name.clone(),
+                        block: block_lines.join("\n"),
+                        inline: false,
+                    });
+                    run_pipeline_stages(stages, self.state)?;
                 }
 
                 idx = block_end;

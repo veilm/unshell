@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented `if`/`else`/`elif` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs tab-indented `for`/`foreach` loops in scripts, and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), and executes `|`, `;`, and `&&` chaining. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** newline trimming toggles and the expansion handler contract.
 
 ## Features
@@ -108,7 +108,7 @@ ls -1 | foreach file
     echo $file
 | grep ".txt"
 ```
-**Current implementation:** tab-indented `cmd | foreach name` blocks inside scripts must be the final stage in a pipeline. Each line of upstream stdout is bound to `name`.
+**Current implementation:** brace or tab-indented `cmd | foreach name` blocks execute in a child process and can appear mid-pipeline; each line of upstream stdout is bound to `name`.
 
 ### External Expansion Handlers
 **Difficulty:** Hard  
