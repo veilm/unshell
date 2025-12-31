@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import glob
 import json
 import sys
 
@@ -16,12 +17,23 @@ def expand_brace(token: str):
     return [f"{prefix}{part}{suffix}" for part in parts]
 
 
+def expand_glob(token: str):
+    if not any(ch in token for ch in "*?["):
+        return [token]
+    matches = glob.glob(token)
+    if not matches:
+        return [token]
+    return sorted(matches)
+
+
 def main():
     if len(sys.argv) < 2:
         print(json.dumps([]))
         return 0
     token = sys.argv[-1]
-    expanded = expand_brace(token)
+    expanded = []
+    for item in expand_brace(token):
+        expanded.extend(expand_glob(item))
     print(json.dumps(expanded))
     return 0
 

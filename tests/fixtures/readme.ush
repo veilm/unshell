@@ -1,0 +1,38 @@
+root=[pwd]
+rm -rf /tmp/ush-readme
+mkdir -p /tmp/ush-readme
+cd /tmp/ush-readme
+
+if true
+	echo branch
+elif [ -d /tmp/ ] { echo not true }
+elif false {
+	echo nope
+}
+else
+	echo fallback
+
+var="my file.txt"
+printf '%s\n' $var
+
+ending="| tac"
+seq 5 ...$ending
+
+echo [seq 10 | tail -1]
+echo "[pwd]"
+echo "$(pwd) $[pwd]"
+echo '$(pwd)'
+
+alias each foreach
+seq 3 | each i
+	echo "done $i"
+
+touch foo1.txt foo2.txt foo3.txt
+ls | each file { echo file:$file } | sort
+
+echo foo*.txt
+set expansions.handler $root/scripts/expansion_handler.py
+set expansions.characters "{" on
+set expansions.characters "*" on
+echo foo{1,2,3}.txt
+echo foo*.txt
