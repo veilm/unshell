@@ -1,0 +1,27 @@
+if false
+	pwd
+	date
+	echo hi
+elif [ -d /tmp/ ] {
+	echo not true 1
+}
+else
+	echo bye
+
+if true { echo 1 ; echo 2 ; echo 3-hi }
+elif [ -d /tmp/ ] {
+	echo 4
+}
+else
+	echo 5
+
+if false
+	echo 6
+elif [ -d /tmp/ ] { echo 7 }
+else
+	echo 8
+
+if false
+	echo 9
+elif [ -d /tmp/88888212414274 ] { echo 10 } else
+	echo 11

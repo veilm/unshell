@@ -1220,7 +1220,18 @@ impl<'a> ScriptContext<'a> {
         if let Some(block) = brace_block {
             if run_child {
                 execute_inline_block(&block, self.state)?;
-                return Ok((false, block_start, true));
+                if let Some(tail) = brace_inline_tail {
+                    let (exit, next_idx, _) = self.handle_else_chain_tail(
+                        Some(tail),
+                        block_start,
+                        indent_level,
+                        false,
+                    )?;
+                    return Ok((exit, next_idx, true));
+                }
+                let (exit, next_idx, _) =
+                    self.handle_else_chain(block_start, indent_level, false)?;
+                return Ok((exit, next_idx, true));
             }
             if let Some(tail) = brace_inline_tail {
                 return self.handle_else_chain_tail(
@@ -1253,7 +1264,9 @@ impl<'a> ScriptContext<'a> {
                     )?;
                     return Ok((exit, next_idx, true));
                 }
-                return Ok((false, end_idx + 1, true));
+                let (exit, next_idx, _) =
+                    self.handle_else_chain(end_idx + 1, indent_level, false)?;
+                return Ok((exit, next_idx, true));
             }
             if let Some(tail) = tail_line {
                 return self.handle_else_chain_tail(
