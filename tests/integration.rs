@@ -13,6 +13,7 @@ struct Fixture {
 fn run_all_fixtures() {
     for fixture in load_fixtures().expect("fixtures") {
         let output = Command::new(env!("CARGO_BIN_EXE_ush"))
+            .arg("--norc")
             .arg(&fixture.script)
             .output()
             .expect("failed to run ush");

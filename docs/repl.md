@@ -20,6 +20,8 @@ Resolution order:
 
 Startup sourcing applies to both REPL and script runs. See `docs/spec.md` for the order and flags.
 
+The default installer will drop a starter init at `/etc/unshell/init` if missing. It only prints a message when `USH_MODE=repl`.
+
 ## Completion
 
 - default: `fzf` if present, list completion otherwise
