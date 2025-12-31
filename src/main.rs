@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 #[cfg(not(feature = "repl"))]
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 mod expand;
@@ -41,28 +42,51 @@ fn main() {
         return;
     }
 
-    if args.len() > 1 {
-        if let Err(err) = run_script(&args[1]) {
-            eprintln!("unshell: failed to run script '{}': {err}", args[1]);
+    let (startup, script) = match parse_startup_args(&args[1..]) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(script) = script {
+        let mut state = ShellState::new();
+        init_shell_state(&mut state, "script");
+        if let Err(err) = load_startup(&mut state, &startup) {
+            eprintln!("unshell: failed to load startup: {err}");
+        }
+        if let Err(err) = run_script_with_state(&script, state) {
+            eprintln!("unshell: failed to run script '{}': {err}", script);
             std::process::exit(1);
         }
         return;
     }
 
-    run_repl();
+    run_repl(&startup);
 }
 
 #[cfg(feature = "repl")]
-fn run_repl() {
+fn run_repl(startup: &StartupConfig) {
     let mut state = ShellState::new();
+    init_shell_state(&mut state, "repl");
+    if let Err(err) = load_startup(&mut state, startup) {
+        eprintln!("unshell: failed to load startup: {err}");
+    }
     repl::run_repl(&mut state);
 }
 
 #[cfg(not(feature = "repl"))]
-fn run_repl() {
+fn run_repl(startup: &StartupConfig) {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut state = ShellState::new();
+
+    init_shell_state(&mut state, "repl");
+    if let Err(err) = load_startup(&mut state, startup) {
+        eprintln!("unshell: failed to load startup: {err}");
+    }
+    println!("unshell: compiled without rustyline repl; using minimal input (no line editing or completion)");
 
     loop {
         if print_prompt(&mut stdout).is_err() {
@@ -85,18 +109,102 @@ fn run_repl() {
     }
 }
 
-fn run_script(path: &str) -> io::Result<()> {
+#[derive(Default)]
+struct StartupConfig {
+    no_rc: bool,
+    rc_path: Option<String>,
+}
+
+fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>), String> {
+    let mut config = StartupConfig::default();
+    let mut idx = 0;
+    let mut script = None;
+
+    while idx < args.len() {
+        let arg = &args[idx];
+        if arg == "--norc" {
+            config.no_rc = true;
+            idx += 1;
+            continue;
+        }
+        if arg == "--rc" {
+            let value = args.get(idx + 1).ok_or("--rc requires a path")?;
+            config.rc_path = Some(value.clone());
+            idx += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            return Err(format!("unknown option '{arg}'"));
+        }
+        script = Some(arg.clone());
+        break;
+    }
+
+    Ok((config, script))
+}
+
+fn init_shell_state(state: &mut ShellState, mode: &str) {
+    let shell = "ush";
+    unsafe {
+        std::env::set_var("SHELL", shell);
+        std::env::set_var("USH_MODE", mode);
+    }
+    state.set_var("SHELL", shell.to_string());
+    state.set_var("USH_MODE", mode.to_string());
+}
+
+fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
-    let mut state = ShellState::new();
     let mut ctx = ScriptContext {
         lines,
         state: &mut state,
     };
     ctx.execute()
         .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+
+    Ok(())
+}
+
+fn source_file(path: &Path, state: &mut ShellState) -> io::Result<()> {
+    let file = File::open(path)?;
+    let reader = BufReader::new(file);
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+    let mut ctx = ScriptContext {
+        lines,
+        state,
+    };
+    ctx.execute()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    Ok(())
+}
+
+fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> io::Result<()> {
+    if startup.no_rc {
+        return Ok(());
+    }
+    if let Some(path) = startup.rc_path.as_deref() {
+        return source_file(Path::new(path), state);
+    }
+    let mut candidates = Vec::new();
+    candidates.push(PathBuf::from("/etc/unshell/init"));
+    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
+        if !xdg.trim().is_empty() {
+            candidates.push(Path::new(&xdg).join("unshell").join("init"));
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        candidates.push(Path::new(&home).join(".config").join("unshell").join("init"));
+        candidates.push(Path::new(&home).join(".unshell").join("init"));
+    }
+
+    for path in candidates {
+        if path.exists() {
+            return source_file(&path, state);
+        }
+    }
 
     Ok(())
 }

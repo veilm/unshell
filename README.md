@@ -109,6 +109,8 @@ install unshell without the repl:
 ```bash
 ush                 # repl
 ush path/to/script  # run a script file line-by-line
+ush --norc          # skip startup files (repl)
+ush --rc path       # source only this init file (repl)
 ```
 
 ## support

@@ -9,8 +9,16 @@ The REPL is powered by Rustyline (default build). It starts in vi mode and provi
 
 ## History
 
-- default path: `~/.ush_history`
-- override: `USH_HISTORY=/path/to/history`
+Resolution order:
+
+1. `USH_HISTFILE`
+2. `HISTFILE`
+3. `XDG_DATA_HOME/unshell/histfile`
+4. `$HOME/.local/share/histfile`
+
+## Startup Sourcing
+
+Startup sourcing applies to both REPL and script runs. See `docs/spec.md` for the order and flags.
 
 ## Completion
 

@@ -318,13 +318,23 @@ fn flush_word(out: &mut String, word: &mut String) {
 }
 
 fn history_path() -> Option<PathBuf> {
-    if let Ok(value) = env::var("USH_HISTORY") {
+    if let Ok(value) = env::var("USH_HISTFILE") {
         if !value.trim().is_empty() {
             return Some(PathBuf::from(value));
         }
     }
+    if let Ok(value) = env::var("HISTFILE") {
+        if !value.trim().is_empty() {
+            return Some(PathBuf::from(value));
+        }
+    }
+    if let Ok(value) = env::var("XDG_DATA_HOME") {
+        if !value.trim().is_empty() {
+            return Some(PathBuf::from(value).join("unshell").join("histfile"));
+        }
+    }
     let home = env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".ush_history"))
+    Some(PathBuf::from(home).join(".local").join("share").join("histfile"))
 }
 
 fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>> {
