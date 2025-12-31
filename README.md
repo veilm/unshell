@@ -86,6 +86,8 @@ a minimal shell. concise syntax, very little bloat while staying extensible
 
 more info: [full spec](./docs/spec.md)
 
+repl details: [repl guide](./docs/repl.md)
+
 ## install
 
 deps: Rust, Python (optional, for the default config)
@@ -93,6 +95,13 @@ deps: Rust, Python (optional, for the default config)
 ```bash
 git clone https://github.com/veilm/unshell
 ./unshell/install.sh
+```
+
+if you don't need interactive usage and want to skip the
+[rustyline](https://github.com/kkawakam/rustyline) pull by cargo, you can
+install unshell without the repl:
+```bash
+./unshell/install.sh --no-repl
 ```
 
 ## usage
