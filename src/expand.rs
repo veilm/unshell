@@ -9,17 +9,6 @@ pub fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<Stri
     let mut expanded = Vec::new();
 
     for token in tokens {
-        if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
-            expanded.push(token[1..token.len() - 1].to_string());
-            continue;
-        }
-        if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
-            match expand_string_literal(&token[1..token.len() - 1], state) {
-                Ok(parts) => expanded.extend(parts),
-                Err(err) => return Err(format!("string expansion failed: {err}")),
-            }
-            continue;
-        }
         if token.starts_with("...") {
             let suffix = &token[3..];
             if suffix.is_empty() {
@@ -32,8 +21,9 @@ pub fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<Stri
             continue;
         }
 
-        let value = expand_unquoted_token(&token, state)?;
-        if should_expand_with_handler(&value, state) {
+        let has_quotes = token.contains('"') || token.contains('\'');
+        let value = expand_token_with_quotes(&token, state)?;
+        if !has_quotes && should_expand_with_handler(&value, state) {
             let replacements = run_expansion_handler(&value, state)?;
             expanded.extend(replacements);
         } else {
@@ -42,6 +32,114 @@ pub fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<Stri
     }
 
     Ok(expanded)
+}
+
+pub fn expand_token_with_quotes(token: &str, state: &ShellState) -> Result<String, String> {
+    let mut result = String::new();
+    let mut segment = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut chars = token.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_double && ch == '\\' {
+            if let Some(next) = chars.next() {
+                segment.push(ch);
+                segment.push(next);
+            } else {
+                segment.push(ch);
+            }
+            continue;
+        }
+
+        match ch {
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if in_double {
+                    let parts = expand_string_literal(&segment, state)?;
+                    if parts.len() != 1 {
+                        return Err("string expansion produced multiple tokens".into());
+                    }
+                    result.push_str(&parts[0]);
+                    segment.clear();
+                    in_double = false;
+                } else {
+                    if !segment.is_empty() {
+                        let value = expand_unquoted_token(&segment, state)?;
+                        result.push_str(&value);
+                        segment.clear();
+                    }
+                    in_double = true;
+                }
+            }
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                if in_single {
+                    result.push_str(&segment);
+                    segment.clear();
+                    in_single = false;
+                } else {
+                    if !segment.is_empty() {
+                        let value = expand_unquoted_token(&segment, state)?;
+                        result.push_str(&value);
+                        segment.clear();
+                    }
+                    in_single = true;
+                }
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if matches!(chars.peek(), Some('(')) {
+                    chars.next();
+                    paren_depth = 1;
+                    segment.push(ch);
+                    segment.push('(');
+                } else {
+                    segment.push(ch);
+                }
+            }
+            '[' if !in_double && !in_single && paren_depth == 0 => {
+                if bracket_depth == 0 {
+                    if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                        segment.push(ch);
+                    } else {
+                        bracket_depth = 1;
+                        segment.push(ch);
+                    }
+                } else {
+                    bracket_depth += 1;
+                    segment.push(ch);
+                }
+            }
+            '[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+                segment.push(ch);
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+                segment.push(ch);
+            }
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+                segment.push(ch);
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                segment.push(ch);
+            }
+            _ => segment.push(ch),
+        }
+    }
+
+    if in_double || in_single {
+        return Err("unterminated string".into());
+    }
+
+    if !segment.is_empty() {
+        let value = expand_unquoted_token(&segment, state)?;
+        result.push_str(&value);
+    }
+
+    Ok(result)
 }
 
 pub fn expand_unquoted_token(token: &str, state: &ShellState) -> Result<String, String> {
@@ -102,6 +200,15 @@ pub fn expand_string_literal(body: &str, state: &ShellState) -> Result<Vec<Strin
     let mut chars = body.chars().peekable();
 
     while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                result.push(next);
+            } else {
+                result.push(ch);
+            }
+            continue;
+        }
+
         if ch == '$' {
             if chars.peek() == Some(&'[') {
                 chars.next();

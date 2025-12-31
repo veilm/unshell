@@ -1,0 +1,3 @@
+ending="foo bar"
+echo $ending
+echo "x$ending-y"

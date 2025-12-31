@@ -7,33 +7,29 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut paren_depth = 0;
     let mut in_double = false;
     let mut in_single = false;
-    let mut current_quote: Option<char> = None;
     let mut chars = line.chars().peekable();
 
     while let Some(ch) = chars.next() {
         match ch {
             '\'' if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single => {
-                if !current.is_empty() {
-                    return Err("unexpected quote inside token".into());
-                }
                 in_single = true;
-                current_quote = Some('\'');
+                current.push(ch);
             }
             '\'' if in_single => {
                 in_single = false;
+                current.push(ch);
             }
             '"' if bracket_depth == 0 && paren_depth == 0 && !in_double => {
-                if !current.is_empty() {
-                    return Err("unexpected quote inside token".into());
-                }
                 in_double = true;
-                current_quote = Some('"');
+                current.push(ch);
             }
             '"' if in_double && paren_depth == 0 => {
                 in_double = false;
+                current.push(ch);
             }
             '\\' if in_double && paren_depth == 0 => {
                 if let Some(next) = chars.next() {
+                    current.push(ch);
                     current.push(next);
                 }
             }
@@ -74,11 +70,7 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
             ch if ch.is_whitespace() && !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 =>
             {
                 if !current.is_empty() {
-                    if let Some(quote) = current_quote.take() {
-                        args.push(format!("{quote}{current}{quote}"));
-                    } else {
-                        args.push(current);
-                    }
+                    args.push(current);
                     current = String::new();
                 }
             }
@@ -95,11 +87,7 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     }
 
     if !current.is_empty() {
-        if let Some(quote) = current_quote {
-            args.push(format!("{quote}{current}{quote}"));
-        } else {
-            args.push(current);
-        }
+        args.push(current);
     }
 
     Ok(args)
