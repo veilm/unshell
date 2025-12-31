@@ -1,0 +1,2 @@
+ending="| tac"
+seq 5 ...$ending

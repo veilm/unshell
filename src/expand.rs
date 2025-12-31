@@ -5,7 +5,30 @@ use crate::parser::parse_args;
 use crate::state::{lookup_var, ShellState};
 use crate::workers::run_capture;
 
+#[derive(Clone, Debug)]
+pub struct ExpandedToken {
+    pub value: String,
+    pub protected: bool,
+    pub allow_split: bool,
+}
+
 pub fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
+    let expanded = expand_tokens_with_meta(tokens, state)?;
+    Ok(expanded.into_iter().map(|token| token.value).collect())
+}
+
+pub fn expand_tokens_with_meta(
+    tokens: Vec<String>,
+    state: &ShellState,
+) -> Result<Vec<ExpandedToken>, String> {
+    expand_tokens_with_meta_inner(tokens, state, false)
+}
+
+fn expand_tokens_with_meta_inner(
+    tokens: Vec<String>,
+    state: &ShellState,
+    from_spread: bool,
+) -> Result<Vec<ExpandedToken>, String> {
     let mut expanded = Vec::new();
 
     for token in tokens {
@@ -16,22 +39,49 @@ pub fn expand_tokens(tokens: Vec<String>, state: &ShellState) -> Result<Vec<Stri
             }
             let source = expand_unquoted_token(suffix, state)?;
             let spread_tokens = parse_args(&source)?;
-            let spread_expanded = expand_tokens(spread_tokens, state)?;
+            let spread_expanded = expand_tokens_with_meta_inner(spread_tokens, state, true)?;
             expanded.extend(spread_expanded);
             continue;
         }
 
-        let has_quotes = token.contains('"') || token.contains('\'');
-        let value = expand_token_with_quotes(&token, state)?;
-        if !has_quotes && should_expand_with_handler(&value, state) {
-            let replacements = run_expansion_handler(&value, state)?;
-            expanded.extend(replacements);
+        let protected = token.contains('"') || token.contains('\'');
+        let allow_split = from_spread || token_contains_operator(&token);
+        let value = if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
+            token[1..token.len() - 1].to_string()
+        } else if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
+            let parts = expand_string_literal(&token[1..token.len() - 1], state)
+                .map_err(|err| format!("string expansion failed: {err}"))?;
+            if parts.len() != 1 {
+                return Err("string expansion produced multiple tokens".into());
+            }
+            parts[0].clone()
         } else {
-            expanded.push(value);
+            expand_token_with_quotes(&token, state)?
+        };
+
+        if !protected && should_expand_with_handler(&value, state) {
+            let replacements = run_expansion_handler(&value, state)?;
+            for replacement in replacements {
+                expanded.push(ExpandedToken {
+                    value: replacement,
+                    protected: false,
+                    allow_split: false,
+                });
+            }
+        } else {
+            expanded.push(ExpandedToken {
+                value,
+                protected,
+                allow_split,
+            });
         }
     }
 
     Ok(expanded)
+}
+
+fn token_contains_operator(token: &str) -> bool {
+    token.contains('|') || token.contains(';') || token.contains('&')
 }
 
 pub fn expand_token_with_quotes(token: &str, state: &ShellState) -> Result<String, String> {

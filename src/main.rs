@@ -8,11 +8,10 @@ mod parser;
 mod state;
 mod workers;
 
-use crate::expand::{expand_tokens, is_var_char, is_var_start};
+use crate::expand::{expand_tokens, expand_tokens_with_meta, is_var_char, is_var_start, ExpandedToken};
 use crate::parser::{
     append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
-    split_indent, split_on_and_or, split_on_pipes, split_on_semicolons, unindent_block_lines,
-    BraceParse, LogicOp,
+    split_indent, split_on_pipes, split_on_semicolons, unindent_block_lines, BraceParse, LogicOp,
 };
 use crate::state::{write_locals_file, ShellState};
 use crate::workers::{run_capture_worker, run_foreach_worker, write_block_file};
@@ -109,17 +108,28 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
         return true;
     }
 
-    let sequences = split_on_semicolons(trimmed);
+    let tokens = match expand_line_tokens(trimmed, state) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            return true;
+        }
+    };
+
+    let sequences = split_tokens_on_semicolons(&tokens);
     for sequence in sequences {
-        let sequence = sequence.trim();
         if sequence.is_empty() {
             continue;
         }
-
-        let chain = split_on_and_or(sequence);
+        let chain = match split_tokens_on_and_or(&sequence) {
+            Ok(chain) => chain,
+            Err(err) => {
+                eprintln!("unshell: {err}");
+                continue;
+            }
+        };
         let mut last_success = true;
         for (op, segment) in chain {
-            let segment = segment.trim();
             if segment.is_empty() {
                 continue;
             }
@@ -128,7 +138,7 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
                 LogicOp::Or if last_success => continue,
                 _ => {}
             }
-            match run_pipeline_segment(segment, state) {
+            match run_pipeline_tokens(&segment, state) {
                 Ok(RunResult::Exit) => return false,
                 Ok(RunResult::Success(success)) => last_success = success,
                 Err(err) => {
@@ -139,6 +149,237 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
         }
     }
     true
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Operator {
+    Pipe,
+    And,
+    Or,
+    Semi,
+}
+
+#[derive(Clone, Debug)]
+enum OpToken {
+    Word(String),
+    Op(Operator),
+}
+
+fn expand_line_tokens(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>, String> {
+    let args = parse_args(line)?;
+    let args = apply_alias(args, state)?;
+    let expanded = expand_tokens_with_meta(args, state)?;
+    split_expanded_tokens(expanded)
+}
+
+fn split_expanded_tokens(tokens: Vec<ExpandedToken>) -> Result<Vec<OpToken>, String> {
+    let mut out = Vec::new();
+    for token in tokens {
+        let mut parts = split_token_ops(&token)?;
+        out.append(&mut parts);
+    }
+    Ok(out)
+}
+
+fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
+    if token.protected || !token.allow_split {
+        return Ok(vec![OpToken::Word(token.value.clone())]);
+    }
+    if token.value.is_empty() {
+        return Ok(vec![OpToken::Word(String::new())]);
+    }
+
+    let chars: Vec<char> = token.value.chars().collect();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut idx = 0;
+
+    while idx < chars.len() {
+        let ch = chars[idx];
+
+        if ch == '$' && bracket_depth == 0 && paren_depth == 0 {
+            if idx + 1 < chars.len() && chars[idx + 1] == '(' {
+                paren_depth = 1;
+                current.push('$');
+                current.push('(');
+                idx += 2;
+                continue;
+            }
+        }
+
+        if ch == '[' && paren_depth == 0 {
+            if bracket_depth == 0 {
+                if idx + 1 < chars.len() && chars[idx + 1].is_whitespace() {
+                    current.push(ch);
+                } else {
+                    bracket_depth = 1;
+                    current.push(ch);
+                }
+            } else {
+                bracket_depth += 1;
+                current.push(ch);
+            }
+            idx += 1;
+            continue;
+        }
+
+        if ch == ']' && bracket_depth > 0 {
+            bracket_depth -= 1;
+            current.push(ch);
+            idx += 1;
+            continue;
+        }
+
+        if ch == '(' && paren_depth > 0 {
+            paren_depth += 1;
+            current.push(ch);
+            idx += 1;
+            continue;
+        }
+
+        if ch == ')' && paren_depth > 0 {
+            paren_depth -= 1;
+            current.push(ch);
+            idx += 1;
+            continue;
+        }
+
+        if bracket_depth == 0 && paren_depth == 0 {
+            if ch == ';' {
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(current));
+                    current = String::new();
+                }
+                parts.push(OpToken::Op(Operator::Semi));
+                idx += 1;
+                continue;
+            }
+            if ch == '|' {
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(current));
+                    current = String::new();
+                }
+                if idx + 1 < chars.len() && chars[idx + 1] == '|' {
+                    parts.push(OpToken::Op(Operator::Or));
+                    idx += 2;
+                } else {
+                    parts.push(OpToken::Op(Operator::Pipe));
+                    idx += 1;
+                }
+                continue;
+            }
+            if ch == '&' && idx + 1 < chars.len() && chars[idx + 1] == '&' {
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(current));
+                    current = String::new();
+                }
+                parts.push(OpToken::Op(Operator::And));
+                idx += 2;
+                continue;
+            }
+        }
+
+        current.push(ch);
+        idx += 1;
+    }
+
+    if !current.is_empty() {
+        parts.push(OpToken::Word(current));
+    }
+
+    Ok(parts)
+}
+
+fn split_tokens_on_semicolons(tokens: &[OpToken]) -> Vec<Vec<OpToken>> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+
+    for token in tokens {
+        if matches!(token, OpToken::Op(Operator::Semi)) {
+            if !current.is_empty() {
+                parts.push(current);
+                current = Vec::new();
+            }
+            continue;
+        }
+        current.push(token.clone());
+    }
+
+    if !current.is_empty() {
+        parts.push(current);
+    }
+
+    parts
+}
+
+fn split_tokens_on_and_or(tokens: &[OpToken]) -> Result<Vec<(LogicOp, Vec<OpToken>)>, String> {
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    let mut next_op = LogicOp::None;
+
+    for token in tokens {
+        match token {
+            OpToken::Op(Operator::And) => {
+                if current.is_empty() {
+                    return Err("empty command in chain".into());
+                }
+                parts.push((next_op, current));
+                current = Vec::new();
+                next_op = LogicOp::And;
+            }
+            OpToken::Op(Operator::Or) => {
+                if current.is_empty() {
+                    return Err("empty command in chain".into());
+                }
+                parts.push((next_op, current));
+                current = Vec::new();
+                next_op = LogicOp::Or;
+            }
+            _ => current.push(token.clone()),
+        }
+    }
+
+    if current.is_empty() {
+        if parts.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err("empty command in chain".into());
+    }
+
+    parts.push((next_op, current));
+    Ok(parts)
+}
+
+fn split_tokens_on_pipes(tokens: &[OpToken]) -> Result<Vec<Vec<String>>, String> {
+    let mut commands = Vec::new();
+    let mut current = Vec::new();
+
+    for token in tokens {
+        match token {
+            OpToken::Word(word) => current.push(word.clone()),
+            OpToken::Op(Operator::Pipe) => {
+                if current.is_empty() {
+                    return Err("empty command in pipeline".into());
+                }
+                commands.push(current);
+                current = Vec::new();
+            }
+            OpToken::Op(Operator::And)
+            | OpToken::Op(Operator::Or)
+            | OpToken::Op(Operator::Semi) => {
+                return Err("unexpected operator in pipeline".into());
+            }
+        }
+    }
+
+    if current.is_empty() {
+        return Err("empty command in pipeline".into());
+    }
+    commands.push(current);
+
+    Ok(commands)
 }
 
 
@@ -276,22 +517,15 @@ enum RunResult {
     Exit,
 }
 
-fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResult, String> {
-    let commands = split_on_pipes(segment);
+fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<RunResult, String> {
+    let commands = split_tokens_on_pipes(tokens)?;
     if commands.is_empty() {
         return Ok(RunResult::Success(true));
     }
 
     if commands.len() == 1 {
-        let args = parse_args(commands[0].trim())?;
-        let args = apply_alias(args, state)?;
-        if args.get(0).map(String::as_str) == Some("alias") {
-            if let Some(result) = run_alias_builtin_unexpanded(&args, state)? {
-                return Ok(result);
-            }
-        }
-        let expanded = expand_tokens(args, state)?;
-        let (assignments, remaining) = split_assignments(&expanded);
+        let args = &commands[0];
+        let (assignments, remaining) = split_assignments(args);
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
@@ -301,16 +535,26 @@ fn run_pipeline_segment(segment: &str, state: &mut ShellState) -> Result<RunResu
         if remaining.len() == 1 && remaining[0] == "exit" {
             return Ok(RunResult::Exit);
         }
-        if let Some(result) = run_builtin(&remaining, state)? {
+        if let Some(result) = run_builtin(remaining, state)? {
             return Ok(result);
         }
         let success = execute_with_status(remaining);
         return Ok(RunResult::Success(success));
     }
 
-    let expanded_commands = build_pipeline_commands(&commands, state)?;
+    let mut pipeline_commands = Vec::new();
+    for command in commands {
+        let (assignments, remaining) = split_assignments(&command);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        pipeline_commands.push(remaining.to_vec());
+    }
 
-    run_pipeline(expanded_commands).map(RunResult::Success)
+    run_pipeline(pipeline_commands).map(RunResult::Success)
 }
 
 fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
@@ -365,7 +609,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             }
             Ok(Some(RunResult::Success(true)))
         }
-        "alias" => Ok(None),
+        "alias" => run_alias_builtin_expanded(args, state),
         "unalias" => {
             if args.len() != 2 {
                 return Err("unalias: expected exactly one name".into());
@@ -466,7 +710,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
     }
 }
 
-fn run_alias_builtin_unexpanded(
+fn run_alias_builtin_expanded(
     args: &[String],
     state: &mut ShellState,
 ) -> Result<Option<RunResult>, String> {
@@ -493,9 +737,7 @@ fn run_alias_builtin_unexpanded(
     if !is_valid_alias_name(alias_name) {
         return Err(format!("alias: invalid name '{alias_name}'"));
     }
-    let raw_tokens = args[arg_idx + 1..].to_vec();
-    let expanded_tokens = expand_tokens(raw_tokens, state)?;
-    let value = expanded_tokens.join(" ");
+    let value = args[arg_idx + 1..].join(" ");
     state.set_alias(alias_name, value, global);
     Ok(Some(RunResult::Success(true)))
 }
