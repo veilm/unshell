@@ -1,31 +1,110 @@
 # unshell
 
-Prototype implementation of the unshell (`ush`) binary.
+a minimal shell. concise syntax, very little bloat while staying extensible
 
-## Building
+## tour: how unshell differs from POSIX shells
+
+- tab-indented or brace-delimited control blocks (`if`/`elif`/`else`/`for`/`foreach`)
+	```bash
+	# no : needed. it's more concise than python that's right
+	if true
+		pwd
+		date
+		echo this is a branch
+	elif [ -d /tmp/ ] { echo not true } # or use braces if you'd like
+	elif false {
+		# multiline
+	}
+	else
+		sudo poweroff
+	```
+- atomic arguments by default: `$var` expands to exactly one argument (no implicit splitting or globbing)
+	```bash
+	# creates "./my file.txt", not ./my and ./file.txt
+	var="my file.txt"
+	touch $var
+	```
+- explicit re-tokenization with `...`: opt into POSIX-like splitting by re-parsing a string
+	```bash
+	# runs `seq 5 | tac`, not `seq 5 "| tac"` or `seq 5 "|" "tac"`
+	ending="| tac"
+	seq 5 ...$ending
+	```
+- square-brackets as a shorthand for subshells
+	```bash
+	# equivalent to echo $(pwd). [] is much faster to type than $()
+	echo [seq 10 | tail -1]
+		# => 10
+
+	# all of these will be one argument, not expanding by default
+	# unless you use ...[] or ...$() etc
+
+	echo "[pwd]" # [] are literals when inside quotes, to avoid collision
+		# => [pwd]
+	echo "$(pwd) $[pwd]" # $() and $[] are still subshells inside quotes
+		# => /tmp /tmp
+	echo '$(pwd)' # everything is literal inside single quotes
+		# => $(pwd)
+	```
+- stream-based, line-based `foreach`. like xargs except not cancer to use
+	```bash
+	# idk if this should be the default, just add it to your config
+	# if you like it
+	alias each foreach
+
+	# indent-based block
+	seq 5 | each i
+		touch $i.txt
+		echo [date +%s] "done text file creation for index $i"
+
+	# use braces if you want to chain further
+	ls | each file { du -h $file } | sort -h
+	```
+- arbitrary shorthand string handling, using your userspace handlers
+	```bash
+	cd /tmp/
+	touch foo1.txt foo2.txt foo3.txt
+
+	# prints a literal foo*.txt. you have no handler by default
+	echo foo*.txt
+
+	# enable the shipped extension handler. easy to modify or replace
+	set expansions.handler scripts/expansion_handler.py
+
+	# intercept tokens containing *, outside of strings
+	set expansions.characters "*" on
+
+	# prints foo1.txt foo2.txt foo3.txt, as 3 separate arguments
+	# expansion_handler.py received "foo*.txt"
+	# and returned a JSON array ["foo1.txt", "foo2.txt", "foo3.txt"]
+	echo foo*.txt
+
+	# you can easily make your own handler for syntax like
+	# fu@3 -> "fufufu", or anything else you want
+	```
+
+more info: [full spec](./docs/spec.md)
+
+## install
+
+deps: Rust, Python (optional, for the default config)
 
 ```bash
-make build
+git clone https://github.com/veilm/unshell
+./unshell/install.sh
 ```
 
-## Installing
-
-Build as your user first, then install (often with `sudo`) so Cargo doesn't need elevated permissions.
+## usage
 
 ```bash
-sudo make install             # installs to /usr/local/bin/ush
-DESTDIR="$HOME/.local" make install  # user-local install without sudo
+ush                 # repl
+ush path/to/script  # run a script file line-by-line
 ```
 
-## Usage
+## support
 
-```bash
-./target/release/ush                 # interactive prompt (temporary)
-./target/release/ush path/to/script  # run a script file line-by-line
-```
+open a GitHub issue or ping me on twitter. I'd be happy to answer any possible question, or discuss Unix or shells in general
 
-## Testing
+## license
 
-```bash
-cargo test          # runs integration fixtures end-to-end
-```
+MIT
