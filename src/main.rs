@@ -8,7 +8,10 @@ mod parser;
 mod state;
 mod workers;
 
-use crate::expand::{expand_tokens, expand_tokens_with_meta, is_var_char, is_var_start, ExpandedToken};
+use crate::expand::{
+    expand_tokens, expand_tokens_with_meta, expand_unquoted_token, is_var_char, is_var_start,
+    ExpandedToken,
+};
 use crate::parser::{
     append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
     split_indent, split_on_pipes, split_on_semicolons, unindent_block_lines, BraceParse, LogicOp,
@@ -172,6 +175,37 @@ fn expand_line_tokens(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>
     split_expanded_tokens(expanded)
 }
 
+fn expand_line_tokens_spread_only(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>, String> {
+    let args = parse_args(line)?;
+    let args = apply_alias(args, state)?;
+    let mut tokens = Vec::new();
+
+    for token in args {
+        if token.starts_with("...") {
+            let suffix = &token[3..];
+            if suffix.is_empty() {
+                return Err("spread requires content".into());
+            }
+            let source = expand_unquoted_token(suffix, state)?;
+            let spread_tokens = parse_args(&source)?;
+            tokens.extend(spread_tokens);
+        } else {
+            tokens.push(token);
+        }
+    }
+
+    let expanded = tokens
+        .into_iter()
+        .map(|token| ExpandedToken {
+            value: token.clone(),
+            protected: token.contains('"') || token.contains('\''),
+            allow_split: token_contains_operator(&token),
+        })
+        .collect();
+
+    split_expanded_tokens(expanded)
+}
+
 fn split_expanded_tokens(tokens: Vec<ExpandedToken>) -> Result<Vec<OpToken>, String> {
     let mut out = Vec::new();
     for token in tokens {
@@ -290,6 +324,10 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
     }
 
     Ok(parts)
+}
+
+fn token_contains_operator(token: &str) -> bool {
+    token.contains('|') || token.contains(';') || token.contains('&')
 }
 
 fn split_tokens_on_semicolons(tokens: &[OpToken]) -> Vec<Vec<OpToken>> {
@@ -517,6 +555,15 @@ enum RunResult {
     Exit,
 }
 
+struct ForeachTokens {
+    var_name: String,
+    before: Vec<Vec<String>>,
+    after: Vec<Vec<String>>,
+    brace_block: Option<String>,
+    brace_open: bool,
+    brace_tail: Option<String>,
+}
+
 fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<RunResult, String> {
     let commands = split_tokens_on_pipes(tokens)?;
     if commands.is_empty() {
@@ -555,6 +602,112 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
     }
 
     run_pipeline(pipeline_commands).map(RunResult::Success)
+}
+
+fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
+    let segments = split_tokens_on_pipes(tokens).ok()?;
+    if segments.len() < 2 {
+        return None;
+    }
+
+    for (idx, segment) in segments.iter().enumerate() {
+        let segment_line = segment.join(" ");
+        let brace = parse_brace_block(&segment_line);
+        let (head, brace_block, brace_open, brace_tail) = match brace {
+            BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
+            BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+            BraceParse::None { head } => (head, None, false, None),
+        };
+        let args = parse_args(&head).ok()?;
+        if args.len() == 2 && args[0] == "foreach" {
+            return Some(ForeachTokens {
+                var_name: args[1].clone(),
+                before: segments[..idx].to_vec(),
+                after: segments[idx + 1..].to_vec(),
+                brace_block,
+                brace_open,
+                brace_tail,
+            });
+        }
+    }
+
+    None
+}
+
+fn build_pipeline_commands_from_token_segments(
+    segments: &[Vec<String>],
+    state: &mut ShellState,
+) -> Result<Vec<Vec<String>>, String> {
+    let mut commands = Vec::new();
+
+    for segment in segments {
+        let expanded = expand_tokens(segment.clone(), state)?;
+        let (assignments, remaining) = split_assignments(&expanded);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        commands.push(remaining.to_vec());
+    }
+
+    Ok(commands)
+}
+
+fn build_pipeline_stages_from_token_segments(
+    segments: &[Vec<String>],
+    state: &mut ShellState,
+) -> Result<Vec<PipelineStage>, String> {
+    let mut stages = Vec::new();
+
+    for segment in segments {
+        if segment.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+
+        let segment_line = segment.join(" ");
+        if segment_line.starts_with("foreach ") {
+            let brace = parse_brace_block(&segment_line);
+            let (head, brace_block, brace_open, brace_tail) = match brace {
+                BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
+                BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                BraceParse::None { head } => (head, None, false, None),
+            };
+            let args = parse_args(&head)?;
+            if args.len() == 2 && args[0] == "foreach" {
+                if brace_open {
+                    return Err("foreach blocks in pipeline tails must use inline braces".into());
+                }
+                if let Some(tail) = brace_tail {
+                    return Err(format!(
+                        "unexpected trailing text after foreach block: {tail}"
+                    ));
+                }
+                let block = brace_block.ok_or_else(|| {
+                    "foreach blocks in pipeline tails must use inline braces".to_string()
+                })?;
+                stages.push(PipelineStage::Foreach {
+                    var: args[1].clone(),
+                    block,
+                    inline: true,
+                });
+                continue;
+            }
+        }
+
+        let expanded = expand_tokens(segment.clone(), state)?;
+        let (assignments, remaining) = split_assignments(&expanded);
+        for (name, value) in assignments {
+            state.set_var(&name, value);
+        }
+        if remaining.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        stages.push(PipelineStage::External(remaining.to_vec()));
+    }
+
+    Ok(stages)
 }
 
 fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
@@ -1170,6 +1323,103 @@ impl<'a> ScriptContext<'a> {
                 if handled {
                     continue;
                 }
+                continue;
+            }
+
+            let foreach_tokens = if trimmed.contains("...") {
+                let tokens = expand_line_tokens_spread_only(&trimmed, self.state)?;
+                parse_foreach_tokens(&tokens)
+            } else {
+                None
+            };
+
+            if let Some(foreach) = foreach_tokens {
+                if !is_valid_var_name(&foreach.var_name) {
+                    return Err(format!(
+                        "invalid foreach variable '{}' on line {}",
+                        foreach.var_name,
+                        idx + 1
+                    ));
+                }
+
+                let mut after_segments = foreach.after;
+
+                if let Some(block) = foreach.brace_block {
+                    if should_execute {
+                        let mut stages = Vec::new();
+                        let before_cmds =
+                            build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
+                        for cmd in before_cmds {
+                            stages.push(PipelineStage::External(cmd));
+                        }
+                        stages.push(PipelineStage::Foreach {
+                            var: foreach.var_name.clone(),
+                            block,
+                            inline: true,
+                        });
+                        let after_stages =
+                            build_pipeline_stages_from_token_segments(&after_segments, self.state)?;
+                        stages.extend(after_stages);
+                        run_pipeline_stages(stages, self.state)?;
+                    }
+                    idx += 1;
+                    continue;
+                }
+
+                if foreach.brace_open {
+                    let (block_lines, end_idx, tail_line) =
+                        collect_brace_block(&self.lines, idx + 1, foreach.brace_tail)?;
+                    if let Some(tail) = tail_line.as_deref() {
+                        let tail_tokens = expand_line_tokens_spread_only(tail, self.state)?;
+                        let mut tail_segments = split_tokens_on_pipes(&tail_tokens)?;
+                        after_segments.append(&mut tail_segments);
+                    }
+                    if should_execute {
+                        let mut stages = Vec::new();
+                        let before_cmds =
+                            build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
+                        for cmd in before_cmds {
+                            stages.push(PipelineStage::External(cmd));
+                        }
+                        stages.push(PipelineStage::Foreach {
+                            var: foreach.var_name.clone(),
+                            block: block_lines.join("\n"),
+                            inline: false,
+                        });
+                        let after_stages =
+                            build_pipeline_stages_from_token_segments(&after_segments, self.state)?;
+                        stages.extend(after_stages);
+                        run_pipeline_stages(stages, self.state)?;
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+                if !after_segments.is_empty() {
+                    return Err("foreach blocks without braces cannot be piped onward".into());
+                }
+
+                if should_execute {
+                    let mut stages = Vec::new();
+                    let before_cmds =
+                        build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
+                    for cmd in before_cmds {
+                        stages.push(PipelineStage::External(cmd));
+                    }
+                    let raw_lines = self.lines[block_start..block_end].to_vec();
+                    let block_lines = unindent_block_lines(&raw_lines);
+                    stages.push(PipelineStage::Foreach {
+                        var: foreach.var_name.clone(),
+                        block: block_lines.join("\n"),
+                        inline: false,
+                    });
+                    run_pipeline_stages(stages, self.state)?;
+                }
+
+                idx = block_end;
                 continue;
             }
 

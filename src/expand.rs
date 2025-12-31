@@ -30,8 +30,38 @@ fn expand_tokens_with_meta_inner(
     from_spread: bool,
 ) -> Result<Vec<ExpandedToken>, String> {
     let mut expanded = Vec::new();
+    let mut brace_depth = 0usize;
 
     for token in tokens {
+        if from_spread {
+            if token == "}" && brace_depth > 0 {
+                expanded.push(ExpandedToken {
+                    value: token,
+                    protected: true,
+                    allow_split: false,
+                });
+                brace_depth -= 1;
+                continue;
+            }
+            if brace_depth > 0 {
+                expanded.push(ExpandedToken {
+                    value: token,
+                    protected: true,
+                    allow_split: false,
+                });
+                continue;
+            }
+            if token == "{" {
+                expanded.push(ExpandedToken {
+                    value: token,
+                    protected: true,
+                    allow_split: false,
+                });
+                brace_depth += 1;
+                continue;
+            }
+        }
+
         if token.starts_with("...") {
             let suffix = &token[3..];
             if suffix.is_empty() {
