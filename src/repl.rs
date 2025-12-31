@@ -450,6 +450,11 @@ pub fn run_repl(state: &mut ShellState) {
     }
 
     loop {
+        if !state.last_output_newline {
+            let _ = print_incomplete_marker();
+            state.last_output_newline = true;
+        }
+
         if state.repl.generation != last_generation {
             last_generation = state.repl.generation;
             match build_editor(state) {
@@ -489,4 +494,10 @@ pub fn run_repl(state: &mut ShellState) {
             }
         }
     }
+}
+
+fn print_incomplete_marker() -> std::io::Result<()> {
+    let mut stdout = std::io::stdout();
+    stdout.write_all(b"\x1b[7m$\x1b[0m\n")?;
+    stdout.flush()
 }

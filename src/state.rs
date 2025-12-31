@@ -38,6 +38,8 @@ pub struct ShellState {
     pub aliases: HashMap<String, AliasEntry>,
     pub options: ShellOptions,
     pub repl: ReplOptions,
+    pub interactive: bool,
+    pub last_output_newline: bool,
 }
 
 impl ShellState {
@@ -57,6 +59,8 @@ impl ShellState {
                 bindings: Vec::new(),
                 generation: 0,
             },
+            interactive: false,
+            last_output_newline: true,
         }
     }
 

@@ -282,9 +282,14 @@ pub fn expand_string_literal(body: &str, state: &ShellState) -> Result<Vec<Strin
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             if let Some(next) = chars.next() {
-                result.push(next);
+                if next == '"' {
+                    result.push('"');
+                } else {
+                    result.push('\\');
+                    result.push(next);
+                }
             } else {
-                result.push(ch);
+                result.push('\\');
             }
             continue;
         }

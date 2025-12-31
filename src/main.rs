@@ -1,8 +1,6 @@
 use std::env;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
-#[cfg(not(feature = "repl"))]
-use std::io::Write;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -89,6 +87,10 @@ fn run_repl(startup: &StartupConfig) {
     println!("unshell: compiled without rustyline repl; using minimal input (no line editing or completion)");
 
     loop {
+        if !state.last_output_newline {
+            let _ = print_incomplete_marker(&mut stdout);
+            state.last_output_newline = true;
+        }
         if print_prompt(&mut stdout).is_err() {
             break;
         }
@@ -107,6 +109,12 @@ fn run_repl(startup: &StartupConfig) {
             }
         }
     }
+}
+
+#[cfg(not(feature = "repl"))]
+fn print_incomplete_marker(stdout: &mut io::Stdout) -> io::Result<()> {
+    stdout.write_all(b"\x1b[7m$\x1b[0m\n")?;
+    stdout.flush()
 }
 
 #[derive(Default)]
@@ -151,6 +159,8 @@ fn init_shell_state(state: &mut ShellState, mode: &str) {
     }
     state.set_var("SHELL", shell.to_string());
     state.set_var("USH_MODE", mode.to_string());
+    state.interactive = mode == "repl";
+    state.last_output_newline = true;
 }
 
 fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
@@ -724,6 +734,10 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         if let Some(result) = run_builtin(remaining, state)? {
             return Ok(result);
         }
+        if state.interactive {
+            let success = execute_with_status_capture(remaining, state)?;
+            return Ok(RunResult::Success(success));
+        }
         let success = execute_with_status(remaining);
         return Ok(RunResult::Success(success));
     }
@@ -740,7 +754,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         pipeline_commands.push(remaining.to_vec());
     }
 
-    run_pipeline(pipeline_commands).map(RunResult::Success)
+    run_pipeline(pipeline_commands, state).map(RunResult::Success)
 }
 
 fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
@@ -1167,9 +1181,10 @@ fn build_pipeline_stages_from_segments(
     Ok(stages)
 }
 
-fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
+fn run_pipeline(commands: Vec<Vec<String>>, state: &mut ShellState) -> Result<bool, String> {
     let mut children = Vec::new();
     let mut prev_stdout: Option<std::process::ChildStdout> = None;
+    let mut last_stdout: Option<std::process::ChildStdout> = None;
 
     for (idx, args) in commands.iter().enumerate() {
         let mut cmd = Command::new(&args[0]);
@@ -1180,6 +1195,8 @@ fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
         }
 
         if idx + 1 < commands.len() {
+            cmd.stdout(Stdio::piped());
+        } else if state.interactive {
             cmd.stdout(Stdio::piped());
         }
 
@@ -1193,9 +1210,20 @@ fn run_pipeline(commands: Vec<Vec<String>>) -> Result<bool, String> {
                 .take()
                 .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
             prev_stdout = Some(stdout);
+        } else if state.interactive {
+            last_stdout = child.stdout.take();
         }
 
         children.push((args[0].clone(), child));
+    }
+
+    if state.interactive {
+        let last_byte = if let Some(stdout) = last_stdout.as_mut() {
+            stream_child_stdout(stdout).map_err(|err| err.to_string())?
+        } else {
+            None
+        };
+        update_last_output(state, last_byte);
     }
 
     let mut last_success = true;
@@ -1223,7 +1251,10 @@ enum PipelineStage {
     },
 }
 
-fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result<bool, String> {
+fn run_pipeline_stages(
+    stages: Vec<PipelineStage>,
+    state: &mut ShellState,
+) -> Result<bool, String> {
     if stages.is_empty() {
         return Ok(true);
     }
@@ -1242,6 +1273,7 @@ fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result
     let mut block_guards = Vec::new();
     let mut children = Vec::new();
     let mut prev_stdout: Option<std::process::ChildStdout> = None;
+    let mut last_stdout: Option<std::process::ChildStdout> = None;
 
     for (idx, stage) in stages.iter().enumerate() {
         let mut cmd = match stage {
@@ -1280,6 +1312,8 @@ fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result
 
         if idx + 1 < stages.len() {
             cmd.stdout(Stdio::piped());
+        } else if state.interactive {
+            cmd.stdout(Stdio::piped());
         }
 
         let mut child = cmd
@@ -1292,6 +1326,8 @@ fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result
                 .take()
                 .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
             prev_stdout = Some(stdout);
+        } else if state.interactive {
+            last_stdout = child.stdout.take();
         }
 
         let name = match stage {
@@ -1299,6 +1335,15 @@ fn run_pipeline_stages(stages: Vec<PipelineStage>, state: &ShellState) -> Result
             PipelineStage::Foreach { .. } => "foreach".to_string(),
         };
         children.push((name, child));
+    }
+
+    if state.interactive {
+        let last_byte = if let Some(stdout) = last_stdout.as_mut() {
+            stream_child_stdout(stdout).map_err(|err| err.to_string())?
+        } else {
+            None
+        };
+        update_last_output(state, last_byte);
     }
 
     let mut last_success = true;
@@ -2023,6 +2068,56 @@ fn execute_with_status(args: &[String]) -> bool {
             eprintln!("unshell: failed to execute '{}': {err}", args[0]);
             false
         }
+    }
+}
+
+fn execute_with_status_capture(args: &[String], state: &mut ShellState) -> Result<bool, String> {
+    if args.is_empty() {
+        return Ok(true);
+    }
+
+    let mut cmd = Command::new(&args[0]);
+    if args.len() > 1 {
+        cmd.args(&args[1..]);
+    }
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
+    let last_byte = if let Some(stdout) = child.stdout.as_mut() {
+        stream_child_stdout(stdout).map_err(|err| err.to_string())?
+    } else {
+        None
+    };
+    let status = child
+        .wait()
+        .map_err(|err| format!("failed to wait on '{}': {err}", args[0]))?;
+    update_last_output(state, last_byte);
+    report_status(&args[0], status);
+    Ok(status.success())
+}
+
+fn stream_child_stdout(stdout: &mut std::process::ChildStdout) -> io::Result<Option<u8>> {
+    let mut buf = [0u8; 8192];
+    let mut last = None;
+    let mut out = io::stdout();
+    loop {
+        let count = stdout.read(&mut buf)?;
+        if count == 0 {
+            break;
+        }
+        out.write_all(&buf[..count])?;
+        last = Some(buf[count - 1]);
+    }
+    out.flush()?;
+    Ok(last)
+}
+
+fn update_last_output(state: &mut ShellState, last_byte: Option<u8>) {
+    if let Some(byte) = last_byte {
+        state.last_output_newline = byte == b'\n';
+    } else {
+        state.last_output_newline = true;
     }
 }
 

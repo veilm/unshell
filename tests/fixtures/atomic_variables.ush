@@ -1,2 +1,2 @@
 name=[printf "%s %s" My Projects]
-printf "%s\\n" $name
+printf "%s\n" $name

@@ -1,6 +1,6 @@
 #!/usr/bin/env ush
 if [ $USH_MODE = repl ]
-	echo "unshell:\n\tyou're using the default /etc/unshell/init!"
-	echo "\tedit this file or see docs/repl.md, to change startup behaviour"
+	echo "unshell: You're using the default /etc/unshell/init!"
+	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
 
 	alias ls "env ls --color=auto"

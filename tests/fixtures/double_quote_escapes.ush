@@ -1,0 +1,6 @@
+printf "%s" "hello \\ foo"
+echo
+printf "%s" "hello \\n"
+echo
+printf "%s" "hello \"world\""
+echo
