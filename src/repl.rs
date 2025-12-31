@@ -16,6 +16,7 @@ use rustyline::{
 };
 
 use crate::state::{ReplBinding, ShellState};
+use crate::term::cursor_column;
 use crate::process_line;
 
 const PROMPT: &str = "unshell> ";
@@ -450,7 +451,18 @@ pub fn run_repl(state: &mut ShellState) {
     }
 
     loop {
-        if !state.last_output_newline {
+        if state.needs_cursor_check {
+            if let Some(column) = cursor_column() {
+                if column != 1 {
+                    let _ = print_incomplete_marker();
+                }
+            }
+            state.needs_cursor_check = false;
+        } else if let Some(column) = cursor_column() {
+            if column != 1 {
+                let _ = print_incomplete_marker();
+            }
+        } else if !state.last_output_newline {
             let _ = print_incomplete_marker();
             state.last_output_newline = true;
         }

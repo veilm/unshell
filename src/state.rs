@@ -40,6 +40,7 @@ pub struct ShellState {
     pub repl: ReplOptions,
     pub interactive: bool,
     pub last_output_newline: bool,
+    pub needs_cursor_check: bool,
 }
 
 impl ShellState {
@@ -61,6 +62,7 @@ impl ShellState {
             },
             interactive: false,
             last_output_newline: true,
+            needs_cursor_check: false,
         }
     }
 

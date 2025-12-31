@@ -2,7 +2,7 @@
 
 The REPL is powered by Rustyline (default build). It starts in vi mode and provides history, file completion, and lightweight highlighting.
 
-When the previous command prints without a trailing newline, the REPL inserts an inverted `$` marker on its own line before the next prompt.
+When output is captured (non-tty stdout), the REPL inserts an inverted `$` marker if the previous command did not end with a newline. When stdout is a tty, the REPL preserves tty semantics for interactive apps and does not capture output.
 
 ## Build Modes
 

@@ -8,6 +8,7 @@ name = "ush"
 path = "src/main.rs"
 
 [dependencies]
+libc = "0.2"
 rustyline = { version = "17.0.1", optional = true, features = ["derive", "custom-bindings"] }
 
 [features]
