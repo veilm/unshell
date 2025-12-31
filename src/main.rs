@@ -228,6 +228,7 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
     let mut current = String::new();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
+    let mut prev_was_space = true;
     let mut idx = 0;
 
     while idx < chars.len() {
@@ -238,6 +239,7 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
                 paren_depth = 1;
                 current.push('$');
                 current.push('(');
+                prev_was_space = false;
                 idx += 2;
                 continue;
             }
@@ -247,13 +249,16 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
             if bracket_depth == 0 {
                 if idx + 1 < chars.len() && chars[idx + 1].is_whitespace() {
                     current.push(ch);
+                    prev_was_space = false;
                 } else {
                     bracket_depth = 1;
                     current.push(ch);
+                    prev_was_space = false;
                 }
             } else {
                 bracket_depth += 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             idx += 1;
             continue;
@@ -262,6 +267,7 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         if ch == ']' && bracket_depth > 0 {
             bracket_depth -= 1;
             current.push(ch);
+            prev_was_space = false;
             idx += 1;
             continue;
         }
@@ -269,6 +275,7 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         if ch == '(' && paren_depth > 0 {
             paren_depth += 1;
             current.push(ch);
+            prev_was_space = false;
             idx += 1;
             continue;
         }
@@ -276,17 +283,22 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         if ch == ')' && paren_depth > 0 {
             paren_depth -= 1;
             current.push(ch);
+            prev_was_space = false;
             idx += 1;
             continue;
         }
 
         if bracket_depth == 0 && paren_depth == 0 {
+            if ch == '#' && prev_was_space {
+                break;
+            }
             if ch == ';' {
                 if !current.is_empty() {
                     parts.push(OpToken::Word(current));
                     current = String::new();
                 }
                 parts.push(OpToken::Op(Operator::Semi));
+                prev_was_space = true;
                 idx += 1;
                 continue;
             }
@@ -302,6 +314,7 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
                     parts.push(OpToken::Op(Operator::Pipe));
                     idx += 1;
                 }
+                prev_was_space = true;
                 continue;
             }
             if ch == '&' && idx + 1 < chars.len() && chars[idx + 1] == '&' {
@@ -310,12 +323,19 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
                     current = String::new();
                 }
                 parts.push(OpToken::Op(Operator::And));
+                prev_was_space = true;
                 idx += 2;
                 continue;
             }
         }
 
-        current.push(ch);
+        if ch.is_whitespace() {
+            current.push(ch);
+            prev_was_space = true;
+        } else {
+            current.push(ch);
+            prev_was_space = false;
+        }
         idx += 1;
     }
 

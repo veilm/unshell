@@ -7,6 +7,7 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut paren_depth = 0;
     let mut in_double = false;
     let mut in_single = false;
+    let mut prev_was_space = true;
     let mut chars = line.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -14,24 +15,37 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
             '\'' if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single => {
                 in_single = true;
                 current.push(ch);
+                prev_was_space = false;
             }
             '\'' if in_single => {
                 in_single = false;
                 current.push(ch);
+                prev_was_space = false;
             }
             '"' if bracket_depth == 0 && paren_depth == 0 && !in_double => {
                 in_double = true;
                 current.push(ch);
+                prev_was_space = false;
             }
             '"' if in_double && paren_depth == 0 => {
                 in_double = false;
                 current.push(ch);
+                prev_was_space = false;
             }
             '\\' if in_double && paren_depth == 0 => {
                 if let Some(next) = chars.next() {
                     current.push(ch);
                     current.push(next);
+                    prev_was_space = false;
                 }
+            }
+            '#' if !in_double
+                && !in_single
+                && bracket_depth == 0
+                && paren_depth == 0
+                && prev_was_space =>
+            {
+                break;
             }
             '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 if matches!(chars.peek(), Some('(')) {
@@ -39,33 +53,41 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
                     paren_depth = 1;
                     current.push('$');
                     current.push('(');
+                    prev_was_space = false;
                 } else {
                     current.push(ch);
+                    prev_was_space = false;
                 }
             }
             '[' if !in_double && !in_single && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
                     current.push(ch);
+                    prev_was_space = false;
                 } else {
                     bracket_depth = 1;
                     current.push(ch);
+                    prev_was_space = false;
                 }
             }
             '[' if bracket_depth > 0 => {
                 bracket_depth += 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ']' if bracket_depth > 0 => {
                 bracket_depth -= 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             '(' if paren_depth > 0 => {
                 paren_depth += 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ')' if paren_depth > 0 => {
                 paren_depth -= 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ch if ch.is_whitespace() && !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 =>
             {
@@ -73,8 +95,16 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
                     args.push(current);
                     current = String::new();
                 }
+                prev_was_space = true;
             }
-            _ => current.push(ch),
+            ch if ch.is_whitespace() => {
+                current.push(ch);
+                prev_was_space = true;
+            }
+            _ => {
+                current.push(ch);
+                prev_was_space = false;
+            }
         }
     }
 
@@ -147,6 +177,7 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
     let mut chars = line.chars().peekable();
+    let mut prev_was_space = true;
 
     while let Some(ch) = chars.next() {
         if in_double && ch == '\\' && paren_depth == 0 {
@@ -154,6 +185,7 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
             if let Some(next) = chars.next() {
                 current.push(next);
             }
+            prev_was_space = false;
             continue;
         }
 
@@ -161,10 +193,20 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
             '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
                 in_single = !in_single;
                 current.push(ch);
+                prev_was_space = false;
             }
             '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 in_double = !in_double;
                 current.push(ch);
+                prev_was_space = false;
+            }
+            '#' if !in_double
+                && !in_single
+                && bracket_depth == 0
+                && paren_depth == 0
+                && prev_was_space =>
+            {
+                break;
             }
             '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 if matches!(chars.peek(), Some('(')) {
@@ -172,33 +214,41 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
                     paren_depth = 1;
                     current.push('$');
                     current.push('(');
+                    prev_was_space = false;
                 } else {
                     current.push(ch);
+                    prev_was_space = false;
                 }
             }
             '[' if !in_double && !in_single && bracket_depth == 0 => {
                 if matches!(chars.peek(), Some(next) if next.is_whitespace()) {
                     current.push(ch);
+                    prev_was_space = false;
                 } else {
                     bracket_depth = 1;
                     current.push(ch);
+                    prev_was_space = false;
                 }
             }
             '[' if bracket_depth > 0 => {
                 bracket_depth += 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ']' if bracket_depth > 0 => {
                 bracket_depth -= 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             '(' if paren_depth > 0 => {
                 paren_depth += 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ')' if paren_depth > 0 => {
                 paren_depth -= 1;
                 current.push(ch);
+                prev_was_space = false;
             }
             ch if ch == delimiter
                 && !in_double
@@ -208,8 +258,16 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
             {
                 parts.push(current);
                 current = String::new();
+                prev_was_space = true;
             }
-            _ => current.push(ch),
+            ch if ch.is_whitespace() => {
+                current.push(ch);
+                prev_was_space = true;
+            }
+            _ => {
+                current.push(ch);
+                prev_was_space = false;
+            }
         }
     }
 

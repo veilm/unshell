@@ -20,6 +20,13 @@ true && echo ok
 false || echo ok
 ```
 
+### Comments
+Full-line comments begin with `#`. Inline comments are recognized when `#` appears in an unquoted token and is preceded by whitespace; everything after the `#` is ignored.
+```bash
+echo hello # inline comment
+echo "literal # inside quotes"
+```
+
 ### Atomic Variables & Assignment
 `$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion. **Current implementation:** leading `name=value` tokens set shell-local variables (no command runs if only assignments are present), `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
 ```bash

@@ -1,0 +1,4 @@
+echo foo # bar
+echo "foo # bar"
+echo '# literal'
+echo foo#bar
