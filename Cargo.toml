@@ -8,3 +8,8 @@ name = "ush"
 path = "src/main.rs"
 
 [dependencies]
+rustyline = { version = "17.0.1", optional = true, features = ["derive", "custom-bindings"] }
+
+[features]
+default = ["repl"]
+repl = ["dep:rustyline"]

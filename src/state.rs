@@ -19,10 +19,25 @@ pub struct AliasEntry {
     pub global: bool,
 }
 
+#[derive(Clone)]
+pub struct ReplBinding {
+    pub key: String,
+    pub action: String,
+}
+
+#[derive(Clone)]
+pub struct ReplOptions {
+    pub vi_mode: bool,
+    pub completion_command: Vec<String>,
+    pub bindings: Vec<ReplBinding>,
+    pub generation: u64,
+}
+
 pub struct ShellState {
     pub vars: HashMap<String, String>,
     pub aliases: HashMap<String, AliasEntry>,
     pub options: ShellOptions,
+    pub repl: ReplOptions,
 }
 
 impl ShellState {
@@ -35,6 +50,12 @@ impl ShellState {
                 subshells_trim_newline: true,
                 expansions_chars: HashSet::new(),
                 expansions_handler: Vec::new(),
+            },
+            repl: ReplOptions {
+                vi_mode: true,
+                completion_command: vec!["fzf".to_string()],
+                bindings: Vec::new(),
+                generation: 0,
             },
         }
     }

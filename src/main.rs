@@ -1,10 +1,14 @@
 use std::env;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader};
+#[cfg(not(feature = "repl"))]
+use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
 
 mod expand;
 mod parser;
+#[cfg(feature = "repl")]
+mod repl;
 mod state;
 mod workers;
 
@@ -48,6 +52,13 @@ fn main() {
     run_repl();
 }
 
+#[cfg(feature = "repl")]
+fn run_repl() {
+    let mut state = ShellState::new();
+    repl::run_repl(&mut state);
+}
+
+#[cfg(not(feature = "repl"))]
 fn run_repl() {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -91,7 +102,7 @@ fn run_script(path: &str) -> io::Result<()> {
 }
 
 
-fn process_line(line: &str, state: &mut ShellState) -> bool {
+pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
     let mut ctx = ScriptContext {
         lines: vec![line.to_string()],
         state,
@@ -861,6 +872,51 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         return Err("set: expansions.handler expects a command".into());
                     }
                     state.options.expansions_handler = args[2..].to_vec();
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.mode" => {
+                    if args.len() != 3 {
+                        return Err("set: repl.mode expects vi|emacs".into());
+                    }
+                    let mode = args[2].as_str();
+                    match mode {
+                        "vi" => state.repl.vi_mode = true,
+                        "emacs" => state.repl.vi_mode = false,
+                        _ => return Err("set: repl.mode expects vi|emacs".into()),
+                    }
+                    state.repl.generation += 1;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.completion.command" => {
+                    if args.len() < 3 {
+                        return Err("set: repl.completion.command expects a value".into());
+                    }
+                    if args.len() == 3 && args[2] == "off" {
+                        state.repl.completion_command.clear();
+                    } else {
+                        state.repl.completion_command = args[2..].to_vec();
+                    }
+                    state.repl.generation += 1;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.bind" => {
+                    if args.len() < 4 {
+                        return Err("set: repl.bind expects KEY ACTION".into());
+                    }
+                    let key = args[2].clone();
+                    let action = args[3..].join(" ");
+                    if action == "off" {
+                        state.repl.bindings.retain(|binding| binding.key != key);
+                    } else {
+                        if let Some(existing) =
+                            state.repl.bindings.iter_mut().find(|binding| binding.key == key)
+                        {
+                            existing.action = action;
+                        } else {
+                            state.repl.bindings.push(crate::state::ReplBinding { key, action });
+                        }
+                    }
+                    state.repl.generation += 1;
                     Ok(Some(RunResult::Success(true)))
                 }
                 _ => Err(format!("set: unknown option '{key}'")),
@@ -1839,6 +1895,7 @@ impl<'a> ScriptContext<'a> {
     }
 }
 
+#[cfg(not(feature = "repl"))]
 fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
     stdout.write_all(b"unshell> ")?;
     stdout.flush()

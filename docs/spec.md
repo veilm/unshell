@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, `&&`, and `||` chaining, ships `cd`, `export`, `alias`, `unalias`, `set`, and `eval` built-ins, supports recursive/global alias expansion controls, toggles capture newline trimming, and delegates token expansion to external handlers. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, `&&`, and `||` chaining, ships `cd`, `export`, `alias`, `unalias`, `set`, and `eval` built-ins, supports recursive/global alias expansion controls, toggles capture newline trimming, delegates token expansion to external handlers, and ships an optional rustyline-backed REPL with vi mode, history, file completion (fzf when available), and basic highlighting. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** expansion handler ergonomics (error reporting, richer examples).
 
 ## Features
@@ -160,6 +160,18 @@ set aliases.recursive false
 set aliases.recursive true
 ```
 **Current implementation:** `aliases.recursive` controls whether alias expansion repeats until it stabilizes.
+
+### REPL (Optional)
+The interactive prompt is provided by Rustyline when built with the default `repl` feature. Vi mode is the default editing mode, history is persisted to `~/.ush_history` (or `USH_HISTORY` if set), and completion uses `fzf` when available with a list-completion fallback. Basic highlighting colors strings and built-ins/control keywords. REPL-only settings are configured via `set`:
+```bash
+set repl.mode vi
+set repl.mode emacs
+set repl.completion.command fzf
+set repl.completion.command off
+set repl.bind ctrl-e end-of-line
+set repl.bind alt-f forward-word
+```
+**Current implementation:** `repl.mode`, `repl.completion.command`, and `repl.bind` update the Rustyline session; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text).
 
 ## Ambiguities / Open Questions
 - **Error handling mode:** Should non-zero exit codes inside pipelines or blocks abort the script (akin to `set -e`) or only fail the current step?

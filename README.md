@@ -81,6 +81,7 @@ a minimal shell. concise syntax, very little bloat while staying extensible
 
 	# you can easily make your own handler for syntax like
 	# fu@3 -> "fufufu", or anything else you want
+	# Gemini 3's ideas: s3://bucket/* and pkg@latest
 	```
 
 more info: [full spec](./docs/spec.md)
