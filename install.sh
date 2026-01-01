@@ -27,4 +27,10 @@ done
 cd "$(dirname "$0")"
 
 make REPL="$repl"
+config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [ -n "$config_home" ] && [ -d "$config_home/kak/autoload/filetype" ]; then
+    install -m 644 util/unshell.kak "$config_home/kak/autoload/filetype/unshell.kak"
+elif [ -n "$config_home" ] && [ -d "$config_home/kak" ]; then
+    install -m 644 util/unshell.kak "$config_home/kak/unshell.kak"
+fi
 sudo make REPL="$repl" install
