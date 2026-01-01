@@ -151,13 +151,25 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `eval`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
+The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"
 unalias ll
 cd /srv/www
 ```
 **Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`). Aliases expand at command start plus optional global aliases for any token (`alias -g`).
+
+### `builtin` Dispatch
+`builtin NAME ...` forces a built-in lookup for `NAME`, bypassing functions. Normal and global aliases still apply before the command is parsed, so a global alias can rewrite the builtin invocation itself.
+```bash
+def cd
+	echo "shadowed $*"
+
+alias -g cd "echo alias"
+
+cd /tmp          # -> "alias /tmp"
+builtin cd /tmp  # -> "alias /tmp" (global alias rewrites the token)
+```
 
 ### Alias Semantics
 Aliases are parsed like normal commands: argument parsing and expansions happen before the builtin receives values. Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first token of a command or pipeline segment.

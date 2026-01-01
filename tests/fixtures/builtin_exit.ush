@@ -1,0 +1,3 @@
+echo start
+builtin exit
+echo end

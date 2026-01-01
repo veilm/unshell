@@ -1,0 +1,22 @@
+def cd
+	echo "func $*"
+
+cd test
+builtin cd /
+pwd
+
+alias cd "echo alias"
+cd foo
+builtin cd /tmp
+pwd
+
+alias -g cd "echo global"
+cd bar
+builtin cd /
+pwd
+
+# cd has to be in quotes or else the previous global alias, would
+# expand before this new alias -g would have a chance to use it
+alias -g "cd" "exit ; echo WRONG"
+builtin cd /tmp
+echo WRONG2

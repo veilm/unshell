@@ -1,0 +1,6 @@
+func test
+/
+alias foo
+/tmp
+global bar
+/tmp

@@ -780,9 +780,6 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             state.last_status = 0;
             return Ok(RunResult::Success(true));
         }
-        if remaining.len() == 1 && remaining[0] == "exit" {
-            return Ok(RunResult::Exit);
-        }
         if let Some(func) = state.functions.get(&remaining[0]).cloned() {
             return run_function(remaining, func, state);
         }
@@ -999,6 +996,20 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             state.last_status = 0;
             Ok(Some(RunResult::Success(true)))
         }
+        "exit" => {
+            if args.len() > 2 {
+                return Err("exit: too many arguments".into());
+            }
+            let code = if args.len() == 2 {
+                args[1]
+                    .parse::<i32>()
+                    .map_err(|_| "exit: status must be an integer".to_string())?
+            } else {
+                state.last_status
+            };
+            state.last_status = code;
+            Ok(Some(RunResult::Exit))
+        }
         "local" => {
             if args.len() != 2 {
                 return Err("local: expected NAME or NAME=VALUE".into());
@@ -1166,6 +1177,22 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 FlowControl::None => {}
             }
             Ok(Some(RunResult::Success(true)))
+        }
+        "builtin" => {
+            if args.len() < 2 {
+                return Err("builtin: expected a command name".into());
+            }
+            let target = &args[1];
+            if target == "builtin" {
+                return Err("builtin: nested builtin is not allowed".into());
+            }
+            let mut inner = Vec::with_capacity(args.len() - 1);
+            inner.push(target.clone());
+            inner.extend_from_slice(&args[2..]);
+            match run_builtin(&inner, state)? {
+                Some(result) => Ok(Some(result)),
+                None => Err(format!("builtin: unknown builtin '{target}'")),
+            }
         }
         "return" => {
             if state.locals_stack.is_empty() {
