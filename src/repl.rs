@@ -4,7 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use rustyline::completion::{Completer as CompletionTrait, Pair};
+use rustyline::completion::{Completer as CompletionTrait, FilenameCompleter, Pair};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -32,6 +32,7 @@ const KEYWORDS: &[&str] = &[
 #[derive(Default)]
 struct FuzzyCompleter {
     command: Vec<String>,
+    fallback: FilenameCompleter,
 }
 
 impl CompletionTrait for FuzzyCompleter {
@@ -43,14 +44,14 @@ impl CompletionTrait for FuzzyCompleter {
         pos: usize,
         ctx: &Context<'_>,
     ) -> Result<(usize, Vec<Self::Candidate>)> {
+        if self.command.is_empty() {
+            return self.fallback.complete(line, pos, ctx);
+        }
+
         let (start, fragment) = word_start(line, pos);
         let (dir_prefix, query) = split_dir_query(fragment);
         let candidates = list_dir_candidates(&dir_prefix, ctx);
         if candidates.is_empty() {
-            return Ok((start, candidates));
-        }
-
-        if self.command.is_empty() {
             return Ok((start, candidates));
         }
 
@@ -75,7 +76,7 @@ impl CompletionTrait for FuzzyCompleter {
                     replacement: fragment.to_string(),
                 }],
             )),
-            FuzzyOutcome::Unavailable => Ok((start, candidates)),
+            FuzzyOutcome::Unavailable => self.fallback.complete(line, pos, ctx),
         }
     }
 
@@ -152,9 +153,6 @@ enum FuzzyOutcome {
 }
 
 fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcome {
-    let _ = set_cursor_visible(false);
-    let _ = move_cursor_to_eol();
-
     let mut cmd = Command::new(&command[0]);
     if command.len() > 1 {
         cmd.args(&command[1..]);
@@ -191,6 +189,9 @@ fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcom
         Ok(child) => child,
         Err(_) => return FuzzyOutcome::Unavailable,
     };
+    let _ = set_cursor_visible(false);
+    let _ = move_cursor_to_eol();
+    let _cursor_guard = CursorGuard;
 
     {
         let stdin = match child.stdin.as_mut() {
@@ -206,7 +207,6 @@ fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcom
         Ok(output) => output,
         Err(_) => return FuzzyOutcome::Unavailable,
     };
-    let _ = set_cursor_visible(true);
 
     if output.stdout.is_empty() {
         return FuzzyOutcome::Cancelled;
@@ -221,6 +221,14 @@ fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcom
         FuzzyOutcome::Cancelled
     } else {
         FuzzyOutcome::Selected(selected)
+    }
+}
+
+struct CursorGuard;
+
+impl Drop for CursorGuard {
+    fn drop(&mut self) {
+        let _ = set_cursor_visible(true);
     }
 }
 
@@ -347,6 +355,7 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
     let helper = ReplHelper {
         completer: FuzzyCompleter {
             command: state.repl.completion_command.clone(),
+            fallback: FilenameCompleter::new(),
         },
     };
 
