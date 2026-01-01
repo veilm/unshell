@@ -4,3 +4,20 @@ if [ $USH_MODE = repl ]
 	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
 
 	alias ls "env ls --color=auto"
+
+alias each foreach
+alias fn def
+alias function def
+
+PWD=[pwd]
+OLDPWD=$PWD
+
+function g
+	if [ $1 = - ]
+		cd $OLDPWD || return
+	else
+		cd $1 || return
+
+	OLDPWD=$PWD
+	PWD=[pwd]
+	ls

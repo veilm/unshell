@@ -5,10 +5,6 @@
 - Arguments are atomic unless the user explicitly re-parses data.
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
-## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, `&&`, and `||` chaining, ships `cd`, `export`, `alias`, `unalias`, `set`, `local`, `return`, and `eval` built-ins, supports `def` functions in the parent context, exposes positional args via `$1`/`$2`/`$#`/`$*`/`$?`, supports recursive/global alias expansion controls, toggles capture newline trimming, delegates token expansion to external handlers, supports startup sourcing for interactive sessions, and ships an optional rustyline-backed REPL with vi mode, history, file completion (fzf when available), and basic highlighting. Integration fixtures cover the current surface area (`cargo test`).
-- **Next up:** expansion handler ergonomics (error reporting, richer examples).
-
 ## Features
 
 ### Execution & Pipes
