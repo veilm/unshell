@@ -31,7 +31,7 @@ touch foo1.txt foo2.txt foo3.txt
 ls | each file { echo file:$file } | sort
 
 echo foo*.txt
-set expansions.handler $root/scripts/expansion_handler.py
+set expansions.handler $root/util/expansion_handler.py
 set expansions.characters "{" on
 set expansions.characters "*" on
 echo foo{1,2,3}.txt

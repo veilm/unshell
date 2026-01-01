@@ -212,7 +212,7 @@ The shell sources the first existing init file from this list:
 3. `$HOME/.config/unshell/init`
 4. `$HOME/.unshell/init`
 
-`make install` will install `scripts/unshell_init` into `/etc/unshell/init` if it does not already exist.
+`make install` will install `util/unshell_init` into `/etc/unshell/init` if it does not already exist.
 
 Flags:
 ```bash

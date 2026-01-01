@@ -69,7 +69,7 @@ a minimal shell. concise syntax, very little bloat while staying extensible
 	echo foo*.txt
 
 	# enable the shipped extension handler. easy to modify or replace
-	set expansions.handler scripts/expansion_handler.py
+	set expansions.handler util/expansion_handler.py
 
 	# intercept tokens containing *, outside of strings
 	set expansions.characters "*" on
