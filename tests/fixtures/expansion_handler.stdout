@@ -1,2 +1,4 @@
+/tmp/ush-expansion-tilde-test/home
+~foo
 filea.txt fileb.txt
 file{a,b}.txt

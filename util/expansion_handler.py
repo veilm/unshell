@@ -27,7 +27,7 @@ def expand_glob(token: str):
     return sorted(matches)
 
 def expand_tilde(token: str):
-    if token.startswith("~/"):
+    if token == "~" or token.startswith("~/"):
         return os.path.expanduser(token)
     return token
 

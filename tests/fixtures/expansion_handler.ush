@@ -1,5 +1,14 @@
 set expansions.characters "{" on
 set expansions.handler python3 util/expansion_handler.py
+base=/tmp/ush-expansion-tilde-test
+rm -rf $base
+mkdir -p $base/home
+export HOME=$base/home
+set expansions.characters "~" on
+echo ~
+echo ~foo
+set expansions.characters "~" off
 echo file{a,b}.txt
 set expansions.characters "{" off
 echo file{a,b}.txt
+rm -rf $base
