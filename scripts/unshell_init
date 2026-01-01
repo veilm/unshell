@@ -1,9 +1,4 @@
 #!/usr/bin/env ush
-if [ $USH_MODE = repl ]
-	echo "unshell: You're using the default /etc/unshell/init!"
-	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
-
-	alias ls "env ls --color=auto"
 
 alias each foreach
 alias fn def
@@ -12,19 +7,33 @@ alias function def
 PWD=[pwd]
 OLDPWD=$PWD
 
-function g
+function cd
 	if [ $1 = - ]
-		cd $OLDPWD || return
+		builtin cd $OLDPWD || return
 	else
-		cd $1 || return
+		builtin cd $1 || return
 
 	OLDPWD=$PWD
 	PWD=[pwd]
-	ls
 
-# default handler for *, {}
+# default handler for ~, *, {}
 handler=/usr/local/bin/ush-expansion-handler
 if [ -f $handler ]
+	set expansions.characters "~" on
 	set expansions.characters "{" on
 	set expansions.characters "*" on
 	set expansions.handler $handler
+
+if [ $USH_MODE = repl ]
+	echo "unshell: You're using the default /etc/unshell/init!"
+	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
+
+	alias ls "env ls --color=auto"
+	alias ll "ls -l"
+	alias la "ls -a"
+
+	function g
+		cd $1
+		ls
+	
+	alias b "g .."

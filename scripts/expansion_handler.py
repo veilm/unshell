@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import glob
 import json
+import os
 import sys
 
 def expand_brace(token: str):
@@ -25,12 +26,17 @@ def expand_glob(token: str):
         return [token]
     return sorted(matches)
 
+def expand_tilde(token: str):
+    if token.startswith("~/"):
+        return os.path.expanduser(token)
+    return token
+
 
 def main():
     if len(sys.argv) < 2:
         print(json.dumps([]))
         return 0
-    token = sys.argv[-1]
+    token = expand_tilde(sys.argv[-1])
     expanded = []
     for item in expand_brace(token):
         expanded.extend(expand_glob(item))
