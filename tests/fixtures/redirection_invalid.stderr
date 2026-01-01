@@ -1,0 +1,3 @@
+unshell: redirection operators must be separated by whitespace
+unshell: redirection destination must be separated by whitespace
+unshell: operators must be separated by whitespace

@@ -1,0 +1,4 @@
+echo hi >out.log
+echo hi out>out.log
+ls|rg foo
+echo ok

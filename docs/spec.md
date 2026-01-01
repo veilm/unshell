@@ -11,9 +11,39 @@
 Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` sequences commands unconditionally, and `&&`/`||` short-circuit on success/failure. There is no special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
 ```bash
 ls /var/log | grep error | tail -n 20
-echo first; echo second
+echo first ; echo second
 true && echo ok
 false || echo ok
+```
+Operators must be separated by whitespace: `ls | rg foo` is valid, `ls|rg foo` is a parse error. The same whitespace rule applies to redirection operators.
+
+### Redirection
+Redirection uses explicit operator tokens and applies to the current pipeline segment only (e.g., `ls | rg foo out> log.txt` redirects `rg` output, not `ls`). Operators are recognized only in unquoted tokens.
+
+#### Output and Error Streams
+- `>` and `>>` redirect stdout to a file (overwrite vs. append). The operator must be a separate token: `echo hi > out.log` is valid, `echo hi >out.log` is a parse error.
+- `out>`, `err>`, `o>`, `e>` redirect stdout/stderr to a destination. `out+err>` and `o+e>` merge stdout and stderr.
+- Stream destinations are written without whitespace and are reserved keywords:
+  - `out>err`, `err>out`, `out+err>out`, `out+err>err`
+  - `o>e`, `e>o`, `o+e>o`, `o+e>e`
+- `null` or `n` as an attached destination sends output to `/dev/null` (e.g., `out>null`, `e>n`).
+- If whitespace separates the destination, it is treated as a literal path (e.g., `out> err` writes to a file named `err`).
+
+Multiple redirections are allowed. If the same stream is redirected more than once, the last redirection wins. Redirects to other streams always use the original stdout/stderr for the command (order does not change which underlying stream is targeted).
+
+#### Input
+`<` redirects stdin from a file. Like `>`/`>>`, it must be a separate token: `cat < input.log` is valid, `cat <input.log` is a parse error.
+
+#### Examples
+```bash
+cat unknown.txt out> out.log err> err.log
+cat unknown.txt out+err> log.log
+cat unknown.txt out+err>> log.log
+cat unknown.txt o> out.log e> err.log
+cat unknown.txt o+e> log.log
+echo hi out> err err> /dev/null
+echo hi > out.log
+cat < input.log
 ```
 
 ### Comments

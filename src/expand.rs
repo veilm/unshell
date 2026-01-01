@@ -136,7 +136,7 @@ fn expand_tokens_with_meta_inner(
 }
 
 fn token_contains_operator(token: &str) -> bool {
-    token.contains('|') || token.contains(';') || token.contains('&')
+    token.contains(';') || token.contains("||") || token.contains('|') || token.contains("&&")
 }
 
 pub fn expand_token_with_quotes(token: &str, state: &ShellState) -> Result<String, String> {

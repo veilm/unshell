@@ -1,4 +1,4 @@
 printf '%s\n' one two | grep two
-echo alpha; echo beta
+echo alpha ; echo beta
 false && echo nope
 echo ok && echo also

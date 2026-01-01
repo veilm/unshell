@@ -1,4 +1,4 @@
 name=before
-eval "echo one; echo two"
+eval "echo one ; echo two"
 eval "name=after"
 echo $name

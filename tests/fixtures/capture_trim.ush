@@ -1,5 +1,5 @@
-echo "$[printf '%s' hi1; echo]"
+echo "$[printf '%s' hi1 ; echo]"
 set subshells.trim_newline false
-echo "$[printf '%s' hi2; echo]"
+echo "$[printf '%s' hi2 ; echo]"
 set subshells.trim_newline true
-echo "$[printf '%s' hi3; echo]"
+echo "$[printf '%s' hi3 ; echo]"

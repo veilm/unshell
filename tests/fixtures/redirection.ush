@@ -1,0 +1,48 @@
+base=/tmp/ush-redir-test
+rm -rf $base
+mkdir -p $base
+cd $base
+
+python3 -u -c 'print("one")' > out.log
+python3 -u -c 'print("two")' >> out.log
+cat out.log
+
+python3 -u -c 'import sys; print("err1", file=sys.stderr)' err> err.log
+cat err.log
+
+python3 -u -c 'import sys; print("out2"); print("err2", file=sys.stderr)' out+err> both.log
+cat both.log
+
+python3 -u -c 'print("short-out")' o> short-out.log
+python3 -u -c 'import sys; print("short-err", file=sys.stderr)' e> short-err.log
+python3 -u -c 'import sys; print("short-both"); print("short-both-err", file=sys.stderr)' o+e> short-both.log
+cat short-out.log
+echo -
+cat short-err.log
+echo -
+cat short-both.log
+
+python3 -u -c 'print("to-stderr")' out>err
+python3 -u -c 'import sys; print("to-stdout", file=sys.stderr)' err>out
+
+python3 -u -c 'import sys; print("merge-out"); print("merge-err", file=sys.stderr)' out+err>out
+python3 -u -c 'import sys; print("merge-out2"); print("merge-err2", file=sys.stderr)' out+err>err
+
+python3 -u -c 'print("drop")' out>null
+python3 -u -c 'import sys; print("drop-err", file=sys.stderr)' err>n
+
+python3 -u -c 'import sys; print("multi-out"); print("multi-err", file=sys.stderr)' out> multi-out.log err> multi-err.log
+cat multi-out.log
+echo -
+cat multi-err.log
+
+python3 -u -c 'print("override")' out>n out> override.log
+cat override.log
+
+printf "input-line\n" > input.txt
+cat < input.txt
+
+python3 -u -c 'print("literal")' out> err
+cat err
+
+rm -rf $base

@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::env;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::io::IsTerminal;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -335,9 +336,42 @@ enum Operator {
 }
 
 #[derive(Clone, Debug)]
+struct WordToken {
+    value: String,
+    protected: bool,
+}
+
+#[derive(Clone, Debug)]
 enum OpToken {
-    Word(String),
+    Word(WordToken),
     Op(Operator),
+}
+
+#[derive(Clone, Debug)]
+enum OutputTarget {
+    File(String),
+    Stdout,
+    Stderr,
+    Null,
+}
+
+#[derive(Clone, Debug)]
+struct OutputRedir {
+    target: OutputTarget,
+    append: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Redirections {
+    stdin: Option<String>,
+    stdout: Option<OutputRedir>,
+    stderr: Option<OutputRedir>,
+}
+
+#[derive(Clone, Debug)]
+struct CommandSpec {
+    args: Vec<String>,
+    redirs: Redirections,
 }
 
 fn expand_line_tokens(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>, String> {
@@ -389,18 +423,50 @@ fn split_expanded_tokens(tokens: Vec<ExpandedToken>) -> Result<Vec<OpToken>, Str
 
 fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
     if token.protected || !token.allow_split {
-        return Ok(vec![OpToken::Word(token.value.clone())]);
+        return Ok(vec![OpToken::Word(WordToken {
+            value: token.value.clone(),
+            protected: token.protected,
+        })]);
     }
     if token.value.is_empty() {
-        return Ok(vec![OpToken::Word(String::new())]);
+        return Ok(vec![OpToken::Word(WordToken {
+            value: String::new(),
+            protected: token.protected,
+        })]);
     }
 
-    let chars: Vec<char> = token.value.chars().collect();
-    let mut parts = Vec::new();
-    let mut current = String::new();
+    if let Some(op) = token_to_operator(&token.value) {
+        return Ok(vec![OpToken::Op(op)]);
+    }
+
+    if contains_top_level_operator(&token.value) {
+        return Err("operators must be separated by whitespace".into());
+    }
+
+    Ok(vec![OpToken::Word(WordToken {
+        value: token.value.clone(),
+        protected: token.protected,
+    })])
+}
+
+fn token_contains_operator(token: &str) -> bool {
+    token.contains(';') || token.contains("||") || token.contains('|') || token.contains("&&")
+}
+
+fn token_to_operator(token: &str) -> Option<Operator> {
+    match token {
+        "|" => Some(Operator::Pipe),
+        "||" => Some(Operator::Or),
+        "&&" => Some(Operator::And),
+        ";" => Some(Operator::Semi),
+        _ => None,
+    }
+}
+
+fn contains_top_level_operator(token: &str) -> bool {
+    let chars: Vec<char> = token.chars().collect();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
-    let mut prev_was_space = true;
     let mut idx = 0;
 
     while idx < chars.len() {
@@ -409,9 +475,6 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         if ch == '$' && bracket_depth == 0 && paren_depth == 0 {
             if idx + 1 < chars.len() && chars[idx + 1] == '(' {
                 paren_depth = 1;
-                current.push('$');
-                current.push('(');
-                prev_was_space = false;
                 idx += 2;
                 continue;
             }
@@ -420,17 +483,12 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         if ch == '[' && paren_depth == 0 {
             if bracket_depth == 0 {
                 if idx + 1 < chars.len() && chars[idx + 1].is_whitespace() {
-                    current.push(ch);
-                    prev_was_space = false;
-                } else {
-                    bracket_depth = 1;
-                    current.push(ch);
-                    prev_was_space = false;
+                    idx += 1;
+                    continue;
                 }
+                bracket_depth = 1;
             } else {
                 bracket_depth += 1;
-                current.push(ch);
-                prev_was_space = false;
             }
             idx += 1;
             continue;
@@ -438,88 +496,35 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
 
         if ch == ']' && bracket_depth > 0 {
             bracket_depth -= 1;
-            current.push(ch);
-            prev_was_space = false;
             idx += 1;
             continue;
         }
 
         if ch == '(' && paren_depth > 0 {
             paren_depth += 1;
-            current.push(ch);
-            prev_was_space = false;
             idx += 1;
             continue;
         }
 
         if ch == ')' && paren_depth > 0 {
             paren_depth -= 1;
-            current.push(ch);
-            prev_was_space = false;
             idx += 1;
             continue;
         }
 
         if bracket_depth == 0 && paren_depth == 0 {
-            if ch == '#' && prev_was_space {
-                break;
-            }
-            if ch == ';' {
-                if !current.is_empty() {
-                    parts.push(OpToken::Word(current));
-                    current = String::new();
-                }
-                parts.push(OpToken::Op(Operator::Semi));
-                prev_was_space = true;
-                idx += 1;
-                continue;
-            }
-            if ch == '|' {
-                if !current.is_empty() {
-                    parts.push(OpToken::Word(current));
-                    current = String::new();
-                }
-                if idx + 1 < chars.len() && chars[idx + 1] == '|' {
-                    parts.push(OpToken::Op(Operator::Or));
-                    idx += 2;
-                } else {
-                    parts.push(OpToken::Op(Operator::Pipe));
-                    idx += 1;
-                }
-                prev_was_space = true;
-                continue;
+            if ch == ';' || ch == '|' {
+                return true;
             }
             if ch == '&' && idx + 1 < chars.len() && chars[idx + 1] == '&' {
-                if !current.is_empty() {
-                    parts.push(OpToken::Word(current));
-                    current = String::new();
-                }
-                parts.push(OpToken::Op(Operator::And));
-                prev_was_space = true;
-                idx += 2;
-                continue;
+                return true;
             }
         }
 
-        if ch.is_whitespace() {
-            current.push(ch);
-            prev_was_space = true;
-        } else {
-            current.push(ch);
-            prev_was_space = false;
-        }
         idx += 1;
     }
 
-    if !current.is_empty() {
-        parts.push(OpToken::Word(current));
-    }
-
-    Ok(parts)
-}
-
-fn token_contains_operator(token: &str) -> bool {
-    token.contains('|') || token.contains(';') || token.contains('&')
+    false
 }
 
 fn split_tokens_on_semicolons(tokens: &[OpToken]) -> Vec<Vec<OpToken>> {
@@ -582,7 +587,7 @@ fn split_tokens_on_and_or(tokens: &[OpToken]) -> Result<Vec<(LogicOp, Vec<OpToke
     Ok(parts)
 }
 
-fn split_tokens_on_pipes(tokens: &[OpToken]) -> Result<Vec<Vec<String>>, String> {
+fn split_tokens_on_pipes(tokens: &[OpToken]) -> Result<Vec<Vec<WordToken>>, String> {
     let mut commands = Vec::new();
     let mut current = Vec::new();
 
@@ -610,6 +615,159 @@ fn split_tokens_on_pipes(tokens: &[OpToken]) -> Result<Vec<Vec<String>>, String>
     commands.push(current);
 
     Ok(commands)
+}
+
+fn parse_redirections(tokens: Vec<WordToken>) -> Result<(Vec<String>, Redirections), String> {
+    let mut args = Vec::new();
+    let mut redirs = Redirections::default();
+    let mut idx = 0;
+
+    while idx < tokens.len() {
+        let token = &tokens[idx];
+        if token.protected {
+            args.push(token.value.clone());
+            idx += 1;
+            continue;
+        }
+
+        if let Some((out_redir, consumed)) = parse_output_redirection(&tokens, idx)? {
+            apply_output_redirection(&mut redirs, out_redir);
+            idx += consumed;
+            continue;
+        }
+
+        if let Some((input_path, consumed)) = parse_input_redirection(&tokens, idx)? {
+            redirs.stdin = Some(input_path);
+            idx += consumed;
+            continue;
+        }
+
+        if token.value.contains('>') || token.value.contains('<') {
+            return Err("redirection operators must be separated by whitespace".into());
+        }
+
+        args.push(token.value.clone());
+        idx += 1;
+    }
+
+    Ok((args, redirs))
+}
+
+fn parse_input_redirection(tokens: &[WordToken], idx: usize) -> Result<Option<(String, usize)>, String> {
+    let token = &tokens[idx];
+    if token.value != "<" {
+        return Ok(None);
+    }
+    let target = tokens.get(idx + 1).ok_or_else(|| "redirection missing destination".to_string())?;
+    if !target.protected && (target.value.contains('>') || target.value.contains('<')) {
+        return Err("redirection operators must be separated by whitespace".into());
+    }
+    Ok(Some((target.value.clone(), 2)))
+}
+
+fn parse_output_redirection(
+    tokens: &[WordToken],
+    idx: usize,
+) -> Result<Option<(OutputSpec, usize)>, String> {
+    let token = &tokens[idx];
+    let value = token.value.as_str();
+
+    if let Some((spec, consumed)) = parse_output_with_inline_target(value)? {
+        return Ok(Some((spec, consumed)));
+    }
+
+    let (stream, append) = match value {
+        ">" => (OutputStream::Stdout, false),
+        ">>" => (OutputStream::Stdout, true),
+        "out>" | "o>" => (OutputStream::Stdout, false),
+        "out>>" | "o>>" => (OutputStream::Stdout, true),
+        "err>" | "e>" => (OutputStream::Stderr, false),
+        "err>>" | "e>>" => (OutputStream::Stderr, true),
+        "out+err>" | "o+e>" => (OutputStream::Both, false),
+        "out+err>>" | "o+e>>" => (OutputStream::Both, true),
+        _ => return Ok(None),
+    };
+
+    let target = tokens
+        .get(idx + 1)
+        .ok_or_else(|| "redirection missing destination".to_string())?;
+    if !target.protected && (target.value.contains('>') || target.value.contains('<')) {
+        return Err("redirection operators must be separated by whitespace".into());
+    }
+    let output = OutputRedir {
+        target: OutputTarget::File(target.value.clone()),
+        append,
+    };
+    let consumed = 2;
+    Ok(Some((OutputSpec { stream, redir: output }, consumed)))
+}
+
+fn parse_output_with_inline_target(value: &str) -> Result<Option<(OutputSpec, usize)>, String> {
+    let prefixes = [
+        ("out+err>>", OutputStream::Both, true),
+        ("out+err>", OutputStream::Both, false),
+        ("o+e>>", OutputStream::Both, true),
+        ("o+e>", OutputStream::Both, false),
+        ("out>>", OutputStream::Stdout, true),
+        ("out>", OutputStream::Stdout, false),
+        ("o>>", OutputStream::Stdout, true),
+        ("o>", OutputStream::Stdout, false),
+        ("err>>", OutputStream::Stderr, true),
+        ("err>", OutputStream::Stderr, false),
+        ("e>>", OutputStream::Stderr, true),
+        ("e>", OutputStream::Stderr, false),
+    ];
+
+    for (prefix, stream, append) in prefixes {
+        if let Some(suffix) = value.strip_prefix(prefix) {
+            if suffix.is_empty() {
+                return Ok(None);
+            }
+            let target = match suffix {
+                "out" | "o" => OutputTarget::Stdout,
+                "err" | "e" => OutputTarget::Stderr,
+                "null" | "n" => OutputTarget::Null,
+                _ => {
+                    return Err("redirection destination must be separated by whitespace".into());
+                }
+            };
+            let output = OutputRedir { target, append };
+            return Ok(Some((OutputSpec { stream, redir: output }, 1)));
+        }
+    }
+
+    if (value.starts_with('>') || value.starts_with('<')) && !matches!(value, ">" | ">>" | "<") {
+        return Err("redirection operators must be separated by whitespace".into());
+    }
+
+    Ok(None)
+}
+
+#[derive(Clone, Copy)]
+enum OutputStream {
+    Stdout,
+    Stderr,
+    Both,
+}
+
+struct OutputSpec {
+    stream: OutputStream,
+    redir: OutputRedir,
+}
+
+fn apply_output_redirection(redirs: &mut Redirections, spec: OutputSpec) {
+    match spec.stream {
+        OutputStream::Stdout => {
+            redirs.stdout = Some(spec.redir);
+        }
+        OutputStream::Stderr => {
+            redirs.stderr = Some(spec.redir);
+        }
+        OutputStream::Both => {
+            redirs.stdout = Some(spec.redir.clone());
+            redirs.stderr = Some(spec.redir);
+        }
+    }
 }
 
 
@@ -772,7 +930,9 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
 
     if commands.len() == 1 {
         let args = &commands[0];
-        let (assignments, remaining) = split_assignments(args);
+        let raw_args: Vec<String> = args.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw_args);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
@@ -780,34 +940,55 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             state.last_status = 0;
             return Ok(RunResult::Success(true));
         }
-        if let Some(func) = state.functions.get(&remaining[0]).cloned() {
-            return run_function(remaining, func, state);
+        let remaining_tokens: Vec<WordToken> = args
+            .iter()
+            .skip(assignments_len)
+            .cloned()
+            .collect();
+        let (remaining_args, redirs) = parse_redirections(remaining_tokens)?;
+        if remaining_args.is_empty() {
+            return Err("empty command in pipeline".into());
         }
-        if let Some(result) = run_builtin(remaining, state)? {
-            return Ok(result);
+
+        if let Some(func) = state.functions.get(&remaining_args[0]).cloned() {
+            return with_redirections(&redirs, || run_function(&remaining_args, func, state));
         }
-        if state.interactive && capture_output_enabled(state) {
-            let success = execute_with_status_capture(remaining, state)?;
-            return Ok(RunResult::Success(success));
+        if is_builtin(&remaining_args[0]) {
+            return with_redirections(&redirs, || {
+                run_builtin(&remaining_args, state)?
+                    .ok_or_else(|| "builtin dispatch failed".to_string())
+            });
         }
-        let success = execute_with_status(remaining, state);
-        if state.interactive {
-            state.last_output_newline = true;
-            state.needs_cursor_check = true;
-        }
+        let success = run_pipeline(
+            vec![CommandSpec {
+                args: remaining_args,
+                redirs,
+            }],
+            state,
+        )?;
         return Ok(RunResult::Success(success));
     }
 
     let mut pipeline_commands = Vec::new();
     for command in commands {
-        let (assignments, remaining) = split_assignments(&command);
+        let raw: Vec<String> = command.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        pipeline_commands.push(remaining.to_vec());
+        let remaining_tokens: Vec<WordToken> = command
+            .into_iter()
+            .skip(assignments_len)
+            .collect();
+        let (args, redirs) = parse_redirections(remaining_tokens)?;
+        if args.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        pipeline_commands.push(CommandSpec { args, redirs });
     }
 
     run_pipeline(pipeline_commands, state).map(RunResult::Success)
@@ -852,7 +1033,11 @@ fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
     }
 
     for (idx, segment) in segments.iter().enumerate() {
-        let segment_line = segment.join(" ");
+        let segment_line = segment
+            .iter()
+            .map(|token| token.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         let brace = parse_brace_block(&segment_line);
         let (head, brace_block, brace_open, brace_tail) = match brace {
             BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
@@ -861,10 +1046,18 @@ fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
         };
         let args = parse_args(&head).ok()?;
         if args.len() == 2 && args[0] == "foreach" {
+            let before = segments[..idx]
+                .iter()
+                .map(|seg| seg.iter().map(|t| t.value.clone()).collect())
+                .collect();
+            let after = segments[idx + 1..]
+                .iter()
+                .map(|seg| seg.iter().map(|t| t.value.clone()).collect())
+                .collect();
             return Some(ForeachTokens {
                 var_name: args[1].clone(),
-                before: segments[..idx].to_vec(),
-                after: segments[idx + 1..].to_vec(),
+                before,
+                after,
                 brace_block,
                 brace_open,
                 brace_tail,
@@ -895,19 +1088,36 @@ fn unindent_block_lines_by(lines: &[String], tabs: usize) -> Vec<String> {
 fn build_pipeline_commands_from_token_segments(
     segments: &[Vec<String>],
     state: &mut ShellState,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<CommandSpec>, String> {
     let mut commands = Vec::new();
 
     for segment in segments {
-        let expanded = expand_tokens(segment.clone(), state)?;
-        let (assignments, remaining) = split_assignments(&expanded);
+        let expanded = expand_tokens_with_meta(segment.clone(), state)?;
+        let words: Vec<WordToken> = expanded
+            .into_iter()
+            .map(|token| WordToken {
+                value: token.value,
+                protected: token.protected,
+            })
+            .collect();
+        let raw_values: Vec<String> = words.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw_values);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        commands.push(remaining.to_vec());
+        let remaining_tokens: Vec<WordToken> = words
+            .into_iter()
+            .skip(assignments_len)
+            .collect();
+        let (args, redirs) = parse_redirections(remaining_tokens)?;
+        if args.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        commands.push(CommandSpec { args, redirs });
     }
 
     Ok(commands)
@@ -954,18 +1164,51 @@ fn build_pipeline_stages_from_token_segments(
             }
         }
 
-        let expanded = expand_tokens(segment.clone(), state)?;
-        let (assignments, remaining) = split_assignments(&expanded);
+        let expanded = expand_tokens_with_meta(segment.clone(), state)?;
+        let words: Vec<WordToken> = expanded
+            .into_iter()
+            .map(|token| WordToken {
+                value: token.value,
+                protected: token.protected,
+            })
+            .collect();
+        let raw_values: Vec<String> = words.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw_values);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        stages.push(PipelineStage::External(remaining.to_vec()));
+        let remaining_tokens: Vec<WordToken> = words
+            .into_iter()
+            .skip(assignments_len)
+            .collect();
+        let (args, redirs) = parse_redirections(remaining_tokens)?;
+        if args.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        stages.push(PipelineStage::External(CommandSpec { args, redirs }));
     }
 
     Ok(stages)
+}
+
+fn is_builtin(name: &str) -> bool {
+    matches!(
+        name,
+        "cd"
+            | "alias"
+            | "unalias"
+            | "set"
+            | "export"
+            | "local"
+            | "return"
+            | "exit"
+            | "builtin"
+            | "eval"
+    )
 }
 
 fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
@@ -1269,15 +1512,24 @@ fn run_alias_builtin_expanded(
 fn build_pipeline_commands(
     commands: &[String],
     state: &mut ShellState,
-) -> Result<Vec<Vec<String>>, String> {
+) -> Result<Vec<CommandSpec>, String> {
     let commands_len = commands.len();
     let mut expanded_commands = Vec::new();
 
     for cmd in commands {
         let args = parse_args(cmd.trim())?;
         let args = apply_alias(args, state)?;
-        let expanded = expand_tokens(args, state)?;
-        let (assignments, remaining) = split_assignments(&expanded);
+        let expanded = expand_tokens_with_meta(args, state)?;
+        let tokens: Vec<WordToken> = expanded
+            .into_iter()
+            .map(|token| WordToken {
+                value: token.value,
+                protected: token.protected,
+            })
+            .collect();
+        let raw_values: Vec<String> = tokens.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw_values);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
@@ -1287,7 +1539,15 @@ fn build_pipeline_commands(
             }
             return Err("empty command in pipeline".into());
         }
-        expanded_commands.push(remaining.to_vec());
+        let remaining_tokens: Vec<WordToken> = tokens
+            .into_iter()
+            .skip(assignments_len)
+            .collect();
+        let (args, redirs) = parse_redirections(remaining_tokens)?;
+        if args.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        expanded_commands.push(CommandSpec { args, redirs });
     }
 
     Ok(expanded_commands)
@@ -1340,60 +1600,136 @@ fn build_pipeline_stages_from_segments(
             }
         }
 
-        let expanded = expand_tokens(tokens, state)?;
-        let (assignments, remaining) = split_assignments(&expanded);
+        let expanded = expand_tokens_with_meta(tokens, state)?;
+        let words: Vec<WordToken> = expanded
+            .into_iter()
+            .map(|token| WordToken {
+                value: token.value,
+                protected: token.protected,
+            })
+            .collect();
+        let raw_values: Vec<String> = words.iter().map(|t| t.value.clone()).collect();
+        let (assignments, remaining) = split_assignments(&raw_values);
+        let assignments_len = assignments.len();
         for (name, value) in assignments {
             state.set_var(&name, value);
         }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        stages.push(PipelineStage::External(remaining.to_vec()));
+        let remaining_tokens: Vec<WordToken> = words
+            .into_iter()
+            .skip(assignments_len)
+            .collect();
+        let (args, redirs) = parse_redirections(remaining_tokens)?;
+        if args.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+        stages.push(PipelineStage::External(CommandSpec { args, redirs }));
     }
 
     Ok(stages)
 }
 
-fn run_pipeline(commands: Vec<Vec<String>>, state: &mut ShellState) -> Result<bool, String> {
+fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bool, String> {
     let mut children = Vec::new();
-    let mut prev_stdout: Option<std::process::ChildStdout> = None;
-    let mut last_stdout: Option<std::process::ChildStdout> = None;
+    let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
+    let mut capture_read: Option<File> = None;
 
-    for (idx, args) in commands.iter().enumerate() {
-        let mut cmd = Command::new(&args[0]);
-        cmd.args(&args[1..]);
-
-        if let Some(stdout) = prev_stdout.take() {
-            cmd.stdin(Stdio::from(stdout));
+    for (idx, spec) in commands.iter().enumerate() {
+        let is_last = idx + 1 == commands.len();
+        let mut cmd = Command::new(&spec.args[0]);
+        if spec.args.len() > 1 {
+            cmd.args(&spec.args[1..]);
         }
 
-        if idx + 1 < commands.len() {
-            cmd.stdout(Stdio::piped());
+        if let Some(input_path) = &spec.redirs.stdin {
+            let file = open_input_file(input_path)?;
+            cmd.stdin(Stdio::from(file));
+            prev_read = None;
+        } else if let Some(prev) = prev_read.take() {
+            cmd.stdin(Stdio::from(prev));
+        }
+
+        let (next_read, stdout_write) = if !is_last {
+            let (read, write) = create_pipe()?;
+            (Some(read), Some(write))
         } else if capture_output {
-            cmd.stdout(Stdio::piped());
+            let (read, write) = create_pipe()?;
+            capture_read = Some(read);
+            (None, Some(write))
+        } else {
+            (None, None)
+        };
+
+        let stdout_target = spec.redirs.stdout.as_ref();
+        let stderr_target = spec.redirs.stderr.as_ref();
+        let stdout_uses_original = matches!(stdout_target, None)
+            || matches!(stdout_target, Some(redir) if matches!(redir.target, OutputTarget::Stdout));
+        let stderr_uses_original =
+            matches!(stderr_target, Some(redir) if matches!(redir.target, OutputTarget::Stdout));
+
+        let original_stdout = if stdout_uses_original || stderr_uses_original {
+            stdout_write.as_ref()
+        } else {
+            None
+        };
+
+        let mut stdout_set = false;
+        let mut stderr_set = false;
+
+        if let (Some(stdout_redir), Some(stderr_redir)) = (stdout_target, stderr_target) {
+            if let (OutputTarget::File(stdout_path), OutputTarget::File(stderr_path)) =
+                (&stdout_redir.target, &stderr_redir.target)
+            {
+                if stdout_path == stderr_path && stdout_redir.append == stderr_redir.append {
+                    let file = open_output_file(stdout_path, stdout_redir.append)?;
+                    let err_file = file.try_clone().map_err(|err| {
+                        format!("failed to clone output file '{stdout_path}': {err}")
+                    })?;
+                    cmd.stdout(Stdio::from(file));
+                    cmd.stderr(Stdio::from(err_file));
+                    stdout_set = true;
+                    stderr_set = true;
+                }
+            }
         }
 
-        let mut child = cmd
+        if !stdout_set {
+            if let Some(redir) = stdout_target {
+                let stdio = build_output_stdio(&redir.target, redir.append, original_stdout)?;
+                cmd.stdout(stdio);
+            } else if let Some(file) = original_stdout {
+                cmd.stdout(Stdio::from(
+                    file.try_clone()
+                        .map_err(|err| format!("failed to clone stdout pipe: {err}"))?,
+                ));
+            }
+        }
+
+        if !stderr_set {
+            if let Some(redir) = stderr_target {
+                let stdio = build_output_stdio(&redir.target, redir.append, original_stdout)?;
+                cmd.stderr(stdio);
+            }
+        }
+
+        let child = cmd
             .spawn()
-            .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
+            .map_err(|err| format!("failed to execute '{}': {err}", spec.args[0]))?;
 
-        if idx + 1 < commands.len() {
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
-            prev_stdout = Some(stdout);
-        } else if capture_output {
-            last_stdout = child.stdout.take();
+        drop(stdout_write);
+        if let Some(read) = next_read {
+            prev_read = Some(read);
         }
 
-        children.push((args[0].clone(), child));
+        children.push((spec.args[0].clone(), child));
     }
 
     if capture_output {
-        let last_byte = if let Some(stdout) = last_stdout.as_mut() {
-            stream_child_stdout(stdout).map_err(|err| err.to_string())?
+        let last_byte = if let Some(mut stdout) = capture_read {
+            stream_reader_stdout(&mut stdout).map_err(|err| err.to_string())?
         } else {
             None
         };
@@ -1423,7 +1759,7 @@ fn run_pipeline(commands: Vec<Vec<String>>, state: &mut ShellState) -> Result<bo
 }
 
 enum PipelineStage {
-    External(Vec<String>),
+    External(CommandSpec),
     Foreach {
         var: String,
         block: String,
@@ -1452,16 +1788,19 @@ fn run_pipeline_stages(
 
     let mut block_guards = Vec::new();
     let mut children = Vec::new();
-    let mut prev_stdout: Option<std::process::ChildStdout> = None;
-    let mut last_stdout: Option<std::process::ChildStdout> = None;
+    let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
+    let mut capture_read: Option<File> = None;
 
     for (idx, stage) in stages.iter().enumerate() {
-        let mut cmd = match stage {
-            PipelineStage::External(args) => {
-                let mut cmd = Command::new(&args[0]);
-                cmd.args(&args[1..]);
-                cmd
+        let is_last = idx + 1 == stages.len();
+        let (mut cmd, redirs, name) = match stage {
+            PipelineStage::External(spec) => {
+                let mut cmd = Command::new(&spec.args[0]);
+                if spec.args.len() > 1 {
+                    cmd.args(&spec.args[1..]);
+                }
+                (cmd, spec.redirs.clone(), spec.args[0].clone())
             }
             PipelineStage::Foreach { var, block, inline } => {
                 let exe = env::current_exe()
@@ -1483,44 +1822,96 @@ fn run_pipeline_stages(
                 if *inline {
                     cmd.arg("--inline");
                 }
-                cmd
+                (cmd, Redirections::default(), "foreach".to_string())
             }
         };
 
-        if let Some(stdout) = prev_stdout.take() {
-            cmd.stdin(Stdio::from(stdout));
+        if let Some(input_path) = &redirs.stdin {
+            let file = open_input_file(input_path)?;
+            cmd.stdin(Stdio::from(file));
+            prev_read = None;
+        } else if let Some(prev) = prev_read.take() {
+            cmd.stdin(Stdio::from(prev));
         }
 
-        if idx + 1 < stages.len() {
-            cmd.stdout(Stdio::piped());
+        let (next_read, stdout_write) = if !is_last {
+            let (read, write) = create_pipe()?;
+            (Some(read), Some(write))
         } else if capture_output {
-            cmd.stdout(Stdio::piped());
+            let (read, write) = create_pipe()?;
+            capture_read = Some(read);
+            (None, Some(write))
+        } else {
+            (None, None)
+        };
+
+        let stdout_target = redirs.stdout.as_ref();
+        let stderr_target = redirs.stderr.as_ref();
+        let stdout_uses_original = matches!(stdout_target, None)
+            || matches!(stdout_target, Some(redir) if matches!(redir.target, OutputTarget::Stdout));
+        let stderr_uses_original =
+            matches!(stderr_target, Some(redir) if matches!(redir.target, OutputTarget::Stdout));
+
+        let original_stdout = if stdout_uses_original || stderr_uses_original {
+            stdout_write.as_ref()
+        } else {
+            None
+        };
+
+        let mut stdout_set = false;
+        let mut stderr_set = false;
+
+        if let (Some(stdout_redir), Some(stderr_redir)) = (stdout_target, stderr_target) {
+            if let (OutputTarget::File(stdout_path), OutputTarget::File(stderr_path)) =
+                (&stdout_redir.target, &stderr_redir.target)
+            {
+                if stdout_path == stderr_path && stdout_redir.append == stderr_redir.append {
+                    let file = open_output_file(stdout_path, stdout_redir.append)?;
+                    let err_file = file.try_clone().map_err(|err| {
+                        format!("failed to clone output file '{stdout_path}': {err}")
+                    })?;
+                    cmd.stdout(Stdio::from(file));
+                    cmd.stderr(Stdio::from(err_file));
+                    stdout_set = true;
+                    stderr_set = true;
+                }
+            }
         }
 
-        let mut child = cmd
+        if !stdout_set {
+            if let Some(redir) = stdout_target {
+                let stdio = build_output_stdio(&redir.target, redir.append, original_stdout)?;
+                cmd.stdout(stdio);
+            } else if let Some(file) = original_stdout {
+                cmd.stdout(Stdio::from(
+                    file.try_clone()
+                        .map_err(|err| format!("failed to clone stdout pipe: {err}"))?,
+                ));
+            }
+        }
+
+        if !stderr_set {
+            if let Some(redir) = stderr_target {
+                let stdio = build_output_stdio(&redir.target, redir.append, original_stdout)?;
+                cmd.stderr(stdio);
+            }
+        }
+
+        let child = cmd
             .spawn()
             .map_err(|err| format!("failed to execute pipeline stage: {err}"))?;
 
-        if idx + 1 < stages.len() {
-            let stdout = child
-                .stdout
-                .take()
-                .ok_or_else(|| "failed to capture stdout for pipeline".to_string())?;
-            prev_stdout = Some(stdout);
-        } else if capture_output {
-            last_stdout = child.stdout.take();
+        drop(stdout_write);
+        if let Some(read) = next_read {
+            prev_read = Some(read);
         }
 
-        let name = match stage {
-            PipelineStage::External(args) => args[0].clone(),
-            PipelineStage::Foreach { .. } => "foreach".to_string(),
-        };
         children.push((name, child));
     }
 
     if capture_output {
-        let last_byte = if let Some(stdout) = last_stdout.as_mut() {
-            stream_child_stdout(stdout).map_err(|err| err.to_string())?
+        let last_byte = if let Some(mut stdout) = capture_read {
+            stream_reader_stdout(&mut stdout).map_err(|err| err.to_string())?
         } else {
             None
         };
@@ -1550,6 +1941,147 @@ fn run_pipeline_stages(
 
     state.last_status = last_status;
     Ok(last_success)
+}
+
+fn with_redirections<T>(redirs: &Redirections, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    if redirs.stdin.is_none() && redirs.stdout.is_none() && redirs.stderr.is_none() {
+        return f();
+    }
+    let _guard = RedirectionGuard::apply(redirs)?;
+    f()
+}
+
+struct RedirectionGuard {
+    stdin_fd: i32,
+    stdout_fd: i32,
+    stderr_fd: i32,
+}
+
+impl RedirectionGuard {
+    fn apply(redirs: &Redirections) -> Result<Self, String> {
+        let stdin_fd = dup_fd(libc::STDIN_FILENO)?;
+        let stdout_fd = dup_fd(libc::STDOUT_FILENO)?;
+        let stderr_fd = dup_fd(libc::STDERR_FILENO)?;
+
+        if let Some(path) = &redirs.stdin {
+            let file = open_input_file(path)?;
+            dup2_fd(file.as_raw_fd(), libc::STDIN_FILENO)?;
+        }
+
+        if let Some(redir) = &redirs.stdout {
+            apply_output_dup(redir, stdout_fd, stderr_fd, libc::STDOUT_FILENO)?;
+        }
+
+        if let Some(redir) = &redirs.stderr {
+            apply_output_dup(redir, stdout_fd, stderr_fd, libc::STDERR_FILENO)?;
+        }
+
+        Ok(Self {
+            stdin_fd,
+            stdout_fd,
+            stderr_fd,
+        })
+    }
+}
+
+impl Drop for RedirectionGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::dup2(self.stdin_fd, libc::STDIN_FILENO) };
+        let _ = unsafe { libc::dup2(self.stdout_fd, libc::STDOUT_FILENO) };
+        let _ = unsafe { libc::dup2(self.stderr_fd, libc::STDERR_FILENO) };
+        let _ = unsafe { libc::close(self.stdin_fd) };
+        let _ = unsafe { libc::close(self.stdout_fd) };
+        let _ = unsafe { libc::close(self.stderr_fd) };
+    }
+}
+
+fn apply_output_dup(
+    redir: &OutputRedir,
+    saved_stdout: i32,
+    saved_stderr: i32,
+    target_fd: i32,
+) -> Result<(), String> {
+    match &redir.target {
+        OutputTarget::Stdout => dup2_fd(saved_stdout, target_fd),
+        OutputTarget::Stderr => dup2_fd(saved_stderr, target_fd),
+        OutputTarget::Null => {
+            let file = open_output_file("/dev/null", redir.append)?;
+            dup2_fd(file.as_raw_fd(), target_fd)
+        }
+        OutputTarget::File(path) => {
+            let file = open_output_file(path, redir.append)?;
+            dup2_fd(file.as_raw_fd(), target_fd)
+        }
+    }
+}
+
+fn build_output_stdio(
+    target: &OutputTarget,
+    append: bool,
+    original_stdout: Option<&File>,
+) -> Result<Stdio, String> {
+    match target {
+        OutputTarget::File(path) => Ok(Stdio::from(open_output_file(path, append)?)),
+        OutputTarget::Null => Ok(Stdio::from(open_output_file("/dev/null", append)?)),
+        OutputTarget::Stdout => {
+            if let Some(file) = original_stdout {
+                Ok(Stdio::from(file.try_clone().map_err(|err| {
+                    format!("failed to clone stdout pipe: {err}")
+                })?))
+            } else {
+                Ok(Stdio::from(file_from_fd(libc::STDOUT_FILENO)?))
+            }
+        }
+        OutputTarget::Stderr => Ok(Stdio::from(file_from_fd(libc::STDERR_FILENO)?)),
+    }
+}
+
+fn open_output_file(path: &str, append: bool) -> Result<File, String> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true);
+    if append {
+        opts.append(true);
+    } else {
+        opts.truncate(true);
+    }
+    opts.open(path)
+        .map_err(|err| format!("failed to open '{path}': {err}"))
+}
+
+fn open_input_file(path: &str) -> Result<File, String> {
+    File::open(path).map_err(|err| format!("failed to open '{path}': {err}"))
+}
+
+fn file_from_fd(fd: i32) -> Result<File, String> {
+    let duped = dup_fd(fd)?;
+    Ok(unsafe { File::from_raw_fd(duped) })
+}
+
+fn create_pipe() -> Result<(File, File), String> {
+    let mut fds = [0; 2];
+    let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if result != 0 {
+        return Err(format!("failed to create pipe: {}", io::Error::last_os_error()));
+    }
+    let read = unsafe { File::from_raw_fd(fds[0]) };
+    let write = unsafe { File::from_raw_fd(fds[1]) };
+    Ok((read, write))
+}
+
+fn dup_fd(fd: i32) -> Result<i32, String> {
+    let result = unsafe { libc::dup(fd) };
+    if result < 0 {
+        return Err(format!("failed to dup fd {fd}: {}", io::Error::last_os_error()));
+    }
+    Ok(result)
+}
+
+fn dup2_fd(src: i32, dst: i32) -> Result<(), String> {
+    let result = unsafe { libc::dup2(src, dst) };
+    if result < 0 {
+        return Err(format!("failed to dup2 fd {src} -> {dst}: {}", io::Error::last_os_error()));
+    }
+    Ok(())
 }
 
 fn expand_aliases_in_line(line: &str, state: &ShellState) -> Result<String, String> {
@@ -1884,7 +2416,11 @@ impl<'a> ScriptContext<'a> {
                     if let Some(tail) = tail_line.as_deref() {
                         let tail_tokens = expand_line_tokens_spread_only(tail, self.state)?;
                         let mut tail_segments = split_tokens_on_pipes(&tail_tokens)?;
-                        after_segments.append(&mut tail_segments);
+                        let mut tail_strings: Vec<Vec<String>> = tail_segments
+                            .drain(..)
+                            .map(|seg| seg.into_iter().map(|t| t.value).collect())
+                            .collect();
+                        after_segments.append(&mut tail_strings);
                     }
                     if should_execute {
                         let mut stages = Vec::new();
@@ -2379,53 +2915,7 @@ fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
     stdout.flush()
 }
 
-fn execute_with_status(args: &[String], state: &mut ShellState) -> bool {
-    if args.is_empty() {
-        return true;
-    }
-
-    match Command::new(&args[0]).args(&args[1..]).status() {
-        Ok(status) => {
-            report_status(&args[0], status);
-            state.last_status = exit_status_code(&status);
-            status.success()
-        }
-        Err(err) => {
-            eprintln!("unshell: failed to execute '{}': {err}", args[0]);
-            state.last_status = 1;
-            false
-        }
-    }
-}
-
-fn execute_with_status_capture(args: &[String], state: &mut ShellState) -> Result<bool, String> {
-    if args.is_empty() {
-        return Ok(true);
-    }
-
-    let mut cmd = Command::new(&args[0]);
-    if args.len() > 1 {
-        cmd.args(&args[1..]);
-    }
-    let mut child = cmd
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to execute '{}': {err}", args[0]))?;
-    let last_byte = if let Some(stdout) = child.stdout.as_mut() {
-        stream_child_stdout(stdout).map_err(|err| err.to_string())?
-    } else {
-        None
-    };
-    let status = child
-        .wait()
-        .map_err(|err| format!("failed to wait on '{}': {err}", args[0]))?;
-    update_last_output(state, last_byte);
-    report_status(&args[0], status);
-    state.last_status = exit_status_code(&status);
-    Ok(status.success())
-}
-
-fn stream_child_stdout(stdout: &mut std::process::ChildStdout) -> io::Result<Option<u8>> {
+fn stream_reader_stdout<R: Read>(stdout: &mut R) -> io::Result<Option<u8>> {
     let mut buf = [0u8; 8192];
     let mut last = None;
     let mut out = io::stdout();
