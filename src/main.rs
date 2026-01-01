@@ -971,11 +971,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             })?;
             let cwd = env::current_dir()
                 .map_err(|err| format!("cd: failed to read current directory: {err}"))?;
-            let cwd_str = cwd.to_string_lossy().to_string();
-            state.set_var("PWD", cwd_str.clone());
-            unsafe {
-                env::set_var("PWD", cwd_str);
-            }
+            let _ = cwd;
             state.last_status = 0;
             Ok(Some(RunResult::Success(true)))
         }
