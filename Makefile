@@ -14,6 +14,7 @@ install:
 		exit 1; \
 	fi
 	install -Dm755 target/release/ush $(DESTDIR)/usr/local/bin/ush
+	install -Dm755 scripts/expansion_handler.py $(DESTDIR)/usr/local/bin/ush-expansion-handler
 	@if [ ! -f $(DESTDIR)/etc/unshell/init ]; then \
 		install -Dm644 scripts/unshell_init $(DESTDIR)/etc/unshell/init; \
 	fi

@@ -21,3 +21,10 @@ function g
 	OLDPWD=$PWD
 	PWD=[pwd]
 	ls
+
+# default handler for *, {}
+handler=/usr/local/bin/ush-expansion-handler
+if [ -f $handler ]
+	set expansions.characters "{" on
+	set expansions.characters "*" on
+	set expansions.handler $handler
