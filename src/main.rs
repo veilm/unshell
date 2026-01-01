@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -21,10 +22,12 @@ use crate::parser::{
     append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
     split_indent, split_on_pipes, split_on_semicolons, unindent_block_lines, BraceParse, LogicOp,
 };
-use crate::state::{write_locals_file, ShellState};
+use crate::state::{lookup_var, write_locals_file, FunctionBody, FunctionDef, ShellState};
 use crate::workers::{run_capture_worker, run_foreach_worker, write_block_file};
 #[cfg(not(feature = "repl"))]
 use crate::term::cursor_column;
+
+const FUNCTION_MAX_DEPTH: usize = 64;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -44,7 +47,7 @@ fn main() {
         return;
     }
 
-    let (startup, script) = match parse_startup_args(&args[1..]) {
+    let (startup, script, script_args) = match parse_startup_args(&args[1..]) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("unshell: {err}");
@@ -55,6 +58,7 @@ fn main() {
     if let Some(script) = script {
         let mut state = ShellState::new();
         init_shell_state(&mut state, "script");
+        state.positional = script_args;
         if let Err(err) = load_startup(&mut state, &startup) {
             eprintln!("unshell: failed to load startup: {err}");
         }
@@ -150,10 +154,11 @@ struct StartupConfig {
     rc_path: Option<String>,
 }
 
-fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>), String> {
+fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>, Vec<String>), String> {
     let mut config = StartupConfig::default();
     let mut idx = 0;
     let mut script = None;
+    let mut script_args = Vec::new();
 
     while idx < args.len() {
         let arg = &args[idx];
@@ -172,10 +177,11 @@ fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>)
             return Err(format!("unknown option '{arg}'"));
         }
         script = Some(arg.clone());
+        script_args = args[idx + 1..].to_vec();
         break;
     }
 
-    Ok((config, script))
+    Ok((config, script, script_args))
 }
 
 fn init_shell_state(state: &mut ShellState, mode: &str) {
@@ -254,7 +260,12 @@ pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
         state,
     };
     match ctx.execute_with_exit() {
-        Ok(exit) => !exit,
+        Ok(FlowControl::Exit) => false,
+        Ok(FlowControl::Return(_)) => {
+            eprintln!("unshell: return not allowed outside functions");
+            true
+        }
+        Ok(FlowControl::None) => true,
         Err(err) => {
             eprintln!("unshell: {err}");
             true
@@ -262,17 +273,18 @@ pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
     }
 }
 
-fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
+fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
-        return true;
+        return FlowControl::None;
     }
 
     let tokens = match expand_line_tokens(trimmed, state) {
         Ok(tokens) => tokens,
         Err(err) => {
             eprintln!("unshell: {err}");
-            return true;
+            state.last_status = 1;
+            return FlowControl::None;
         }
     };
 
@@ -281,17 +293,18 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
         if sequence.is_empty() {
             continue;
         }
-        let chain = match split_tokens_on_and_or(&sequence) {
-            Ok(chain) => chain,
-            Err(err) => {
-                eprintln!("unshell: {err}");
-                continue;
-            }
-        };
-        let mut last_success = true;
-        for (op, segment) in chain {
-            if segment.is_empty() {
-                continue;
+            let chain = match split_tokens_on_and_or(&sequence) {
+                Ok(chain) => chain,
+                Err(err) => {
+                    eprintln!("unshell: {err}");
+                    state.last_status = 1;
+                    continue;
+                }
+            };
+            let mut last_success = true;
+            for (op, segment) in chain {
+                if segment.is_empty() {
+                    continue;
             }
             match op {
                 LogicOp::And if !last_success => continue,
@@ -299,16 +312,18 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> bool {
                 _ => {}
             }
             match run_pipeline_tokens(&segment, state) {
-                Ok(RunResult::Exit) => return false,
+                Ok(RunResult::Exit) => return FlowControl::Exit,
+                Ok(RunResult::Return(code)) => return FlowControl::Return(code),
                 Ok(RunResult::Success(success)) => last_success = success,
                 Err(err) => {
                     eprintln!("unshell: {err}");
                     last_success = false;
+                    state.last_status = 1;
                 }
             }
         }
     }
-    true
+    FlowControl::None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -730,6 +745,14 @@ fn is_valid_var_name(name: &str) -> bool {
 enum RunResult {
     Success(bool),
     Exit,
+    Return(i32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FlowControl {
+    None,
+    Exit,
+    Return(i32),
 }
 
 struct ForeachTokens {
@@ -754,10 +777,14 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             state.set_var(&name, value);
         }
         if remaining.is_empty() {
+            state.last_status = 0;
             return Ok(RunResult::Success(true));
         }
         if remaining.len() == 1 && remaining[0] == "exit" {
             return Ok(RunResult::Exit);
+        }
+        if let Some(func) = state.functions.get(&remaining[0]).cloned() {
+            return run_function(remaining, func, state);
         }
         if let Some(result) = run_builtin(remaining, state)? {
             return Ok(result);
@@ -766,7 +793,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             let success = execute_with_status_capture(remaining, state)?;
             return Ok(RunResult::Success(success));
         }
-        let success = execute_with_status(remaining);
+        let success = execute_with_status(remaining, state);
         if state.interactive {
             state.last_output_newline = true;
             state.needs_cursor_check = true;
@@ -787,6 +814,38 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
     }
 
     run_pipeline(pipeline_commands, state).map(RunResult::Success)
+}
+
+fn run_function(
+    args: &[String],
+    func: FunctionDef,
+    state: &mut ShellState,
+) -> Result<RunResult, String> {
+    if state.locals_stack.len() >= FUNCTION_MAX_DEPTH {
+        return Err("function call depth exceeded".into());
+    }
+    state.positional_stack.push(state.positional.clone());
+    state.positional = args[1..].to_vec();
+    state.locals_stack.push(HashMap::new());
+    state.last_status = 0;
+
+    let result = match func.body {
+        FunctionBody::Inline(body) => execute_inline_block(&body, state),
+        FunctionBody::Block(lines) => {
+            let mut ctx = ScriptContext { lines, state };
+            ctx.execute_with_exit()
+        }
+    };
+
+    let flow = result;
+    state.positional = state.positional_stack.pop().unwrap_or_default();
+    state.locals_stack.pop();
+
+    match flow? {
+        FlowControl::Exit => Ok(RunResult::Exit),
+        FlowControl::Return(code) => Ok(RunResult::Success(code == 0)),
+        FlowControl::None => Ok(RunResult::Success(state.last_status == 0)),
+    }
 }
 
 fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
@@ -917,6 +976,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             unsafe {
                 env::set_var("PWD", cwd_str);
             }
+            state.last_status = 0;
             Ok(Some(RunResult::Success(true)))
         }
         "export" => {
@@ -934,17 +994,29 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 if !is_valid_var_name(item) {
                     return Err(format!("export: invalid name '{item}'"));
                 }
-                let value = state
-                    .vars
-                    .get(item)
-                    .cloned()
-                    .or_else(|| env::var(item).ok())
-                    .unwrap_or_default();
+                let value = lookup_var(state, item);
                 state.set_var(item, value.clone());
                 unsafe {
                     env::set_var(item, value);
                 }
             }
+            state.last_status = 0;
+            Ok(Some(RunResult::Success(true)))
+        }
+        "local" => {
+            if args.len() != 2 {
+                return Err("local: expected NAME or NAME=VALUE".into());
+            }
+            let item = &args[1];
+            if let Some((name, value)) = parse_assignment(item) {
+                state.set_local_var(&name, value)?;
+            } else {
+                if !is_valid_var_name(item) {
+                    return Err(format!("local: invalid name '{item}'"));
+                }
+                state.set_local_var(item, String::new())?;
+            }
+            state.last_status = 0;
             Ok(Some(RunResult::Success(true)))
         }
         "alias" => run_alias_builtin_expanded(args, state),
@@ -956,6 +1028,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             if !state.remove_alias(alias_name) {
                 return Err(format!("unalias: no such alias '{alias_name}'"));
             }
+            state.last_status = 0;
             Ok(Some(RunResult::Success(true)))
         }
         "set" => {
@@ -979,6 +1052,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         }
                     };
                     state.options.aliases_recursive = enabled;
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "subshells.trim_newline" => {
@@ -996,6 +1070,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         }
                     };
                     state.options.subshells_trim_newline = enabled;
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "expansions.characters" => {
@@ -1019,6 +1094,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                             state.options.expansions_chars.remove(&ch);
                         }
                     }
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "expansions.handler" => {
@@ -1026,6 +1102,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         return Err("set: expansions.handler expects a command".into());
                     }
                     state.options.expansions_handler = args[2..].to_vec();
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "repl.mode" => {
@@ -1039,6 +1116,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         _ => return Err("set: repl.mode expects vi|emacs".into()),
                     }
                     state.repl.generation += 1;
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "repl.completion.command" => {
@@ -1051,6 +1129,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         state.repl.completion_command = args[2..].to_vec();
                     }
                     state.repl.generation += 1;
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 "repl.bind" => {
@@ -1071,6 +1150,7 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         }
                     }
                     state.repl.generation += 1;
+                    state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
                 _ => Err(format!("set: unknown option '{key}'")),
@@ -1084,10 +1164,29 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 lines: vec![args[1].clone()],
                 state,
             };
-            if ctx.execute_with_exit()? {
-                return Ok(Some(RunResult::Exit));
+            match ctx.execute_with_exit()? {
+                FlowControl::Exit => return Ok(Some(RunResult::Exit)),
+                FlowControl::Return(code) => return Ok(Some(RunResult::Return(code))),
+                FlowControl::None => {}
             }
             Ok(Some(RunResult::Success(true)))
+        }
+        "return" => {
+            if state.locals_stack.is_empty() {
+                return Err("return: not in function".into());
+            }
+            if args.len() > 2 {
+                return Err("return: too many arguments".into());
+            }
+            let code = if args.len() == 2 {
+                args[1]
+                    .parse::<i32>()
+                    .map_err(|_| "return: status must be an integer".to_string())?
+            } else {
+                state.last_status
+            };
+            state.last_status = code;
+            Ok(Some(RunResult::Return(code)))
         }
         _ => Ok(None),
     }
@@ -1105,6 +1204,7 @@ fn run_alias_builtin_expanded(
                 println!("alias {name} {}", value.value);
             }
         }
+        state.last_status = 0;
         return Ok(Some(RunResult::Success(true)));
     }
     let mut arg_idx = 1;
@@ -1122,6 +1222,7 @@ fn run_alias_builtin_expanded(
     }
     let value = args[arg_idx + 1..].join(" ");
     state.set_alias(alias_name, value, global);
+    state.last_status = 0;
     Ok(Some(RunResult::Success(true)))
 }
 
@@ -1263,6 +1364,7 @@ fn run_pipeline(commands: Vec<Vec<String>>, state: &mut ShellState) -> Result<bo
     }
 
     let mut last_success = true;
+    let mut last_status = 0;
     for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
@@ -1272,8 +1374,10 @@ fn run_pipeline(commands: Vec<Vec<String>>, state: &mut ShellState) -> Result<bo
         }
         if idx + 1 == commands.len() {
             last_success = status.success();
+            last_status = exit_status_code(&status);
         }
     }
+    state.last_status = last_status;
 
     Ok(last_success)
 }
@@ -1387,6 +1491,7 @@ fn run_pipeline_stages(
     }
 
     let mut last_success = true;
+    let mut last_status = 0;
     for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
@@ -1396,12 +1501,14 @@ fn run_pipeline_stages(
         }
         if idx + 1 == stages.len() {
             last_success = status.success();
+            last_status = exit_status_code(&status);
         }
     }
 
     drop(block_guards);
     drop(locals_guard);
 
+    state.last_status = last_status;
     Ok(last_success)
 }
 
@@ -1423,17 +1530,24 @@ fn expand_aliases_in_line(line: &str, state: &ShellState) -> Result<String, Stri
     Ok(expanded_segments.join(" | "))
 }
 
-pub fn execute_inline_block(block: &str, state: &mut ShellState) -> Result<(), String> {
+pub(crate) fn execute_inline_block(
+    block: &str,
+    state: &mut ShellState,
+) -> Result<FlowControl, String> {
     let segments = split_on_semicolons(block);
     for segment in segments {
         if segment.trim().is_empty() {
             continue;
         }
-        if !process_line_raw(&segment, state) {
-            return Err("exit not allowed in inline block".into());
+        match process_line_raw(&segment, state) {
+            FlowControl::Exit => {
+                return Err("exit not allowed in inline block".into());
+            }
+            FlowControl::Return(code) => return Ok(FlowControl::Return(code)),
+            FlowControl::None => {}
         }
     }
-    Ok(())
+    Ok(FlowControl::None)
 }
 
 pub struct ScriptContext<'a> {
@@ -1443,7 +1557,7 @@ pub struct ScriptContext<'a> {
 
 struct BlockResult {
     next: usize,
-    exit: bool,
+    flow: FlowControl,
 }
 
 impl<'a> ScriptContext<'a> {
@@ -1452,16 +1566,16 @@ impl<'a> ScriptContext<'a> {
         Ok(())
     }
 
-    pub fn execute_with_exit(&mut self) -> Result<bool, String> {
+    pub(crate) fn execute_with_exit(&mut self) -> Result<FlowControl, String> {
         let mut idx = 0;
         while idx < self.lines.len() {
             let result = self.execute_block(idx, 0, true)?;
             idx = result.next;
-            if result.exit {
-                return Ok(true);
+            if result.flow != FlowControl::None {
+                return Ok(result.flow);
             }
         }
-        Ok(false)
+        Ok(FlowControl::None)
     }
 
     fn execute_block(
@@ -1495,6 +1609,7 @@ impl<'a> ScriptContext<'a> {
             let expanded = expand_aliases_in_line(&trimmed, self.state)?;
             let use_expanded = expanded.starts_with("if ")
                 || expanded.starts_with("for ")
+                || expanded.starts_with("def ")
                 || parse_foreach_line(&expanded).is_some();
             let trimmed = if use_expanded { expanded } else { trimmed };
 
@@ -1517,7 +1632,14 @@ impl<'a> ScriptContext<'a> {
 
                 if let Some(block) = brace_block {
                     if run_child {
-                        execute_inline_block(&block, self.state)?;
+                        if let FlowControl::Return(code) =
+                            execute_inline_block(&block, self.state)?
+                        {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Return(code),
+                            });
+                        }
                     }
                     let (exit, next_idx, handled) = self.handle_else_chain_tail(
                         brace_inline_tail,
@@ -1526,10 +1648,10 @@ impl<'a> ScriptContext<'a> {
                         should_execute && !run_child,
                     )?;
                     idx = next_idx;
-                    if exit {
+                    if exit != FlowControl::None {
                         return Ok(BlockResult {
                             next: idx,
-                            exit: true,
+                            flow: exit,
                         });
                     }
                     if handled {
@@ -1552,20 +1674,29 @@ impl<'a> ScriptContext<'a> {
                             lines: block_lines,
                             state: self.state,
                         };
-                        if ctx.execute_with_exit()? {
-                            return Ok(BlockResult {
-                                next: next_idx,
-                                exit: true,
-                            });
+                        match ctx.execute_with_exit()? {
+                            FlowControl::Exit => {
+                                return Ok(BlockResult {
+                                    next: next_idx,
+                                    flow: FlowControl::Exit,
+                                });
+                            }
+                            FlowControl::Return(code) => {
+                                return Ok(BlockResult {
+                                    next: next_idx,
+                                    flow: FlowControl::Return(code),
+                                });
+                            }
+                            FlowControl::None => {}
                         }
                     } else if handled {
                         // else/elif chain executed instead
                     }
                     idx = next_idx;
-                    if exit {
+                    if exit != FlowControl::None {
                         return Ok(BlockResult {
                             next: idx,
-                            exit: true,
+                            flow: exit,
                         });
                     }
                     continue;
@@ -1576,22 +1707,94 @@ impl<'a> ScriptContext<'a> {
                     self.execute_block(idx, indent_level + 1, should_execute && run_child)?;
                 idx = result.next;
 
-                if result.exit {
+                if result.flow != FlowControl::None {
                     return Ok(result);
                 }
 
                 let (exit, next_idx, handled) =
                     self.handle_else_chain(idx, indent_level, should_execute && !run_child)?;
                 idx = next_idx;
-                if exit {
+                if exit != FlowControl::None {
                     return Ok(BlockResult {
                         next: idx,
-                        exit: true,
+                        flow: exit,
                     });
                 }
                 if handled {
                     continue;
                 }
+                continue;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("def ") {
+                let brace = parse_brace_block(rest);
+                let (head, brace_block, brace_open, brace_tail) = match brace {
+                    BraceParse::Inline { head, body, tail } => (head, Some(body), false, tail),
+                    BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                    BraceParse::None { head } => (head, None, false, None),
+                };
+                let args = parse_args(&head)?;
+                if args.len() != 1 {
+                    return Err(format!("def expects a single name on line {}", idx + 1));
+                }
+                let name = &args[0];
+                if !is_valid_var_name(name) {
+                    return Err(format!("invalid function name '{}' on line {}", name, idx + 1));
+                }
+                if let Some(tail) = brace_tail.as_deref() {
+                    if !tail.trim().is_empty() {
+                        return Err(format!(
+                            "unexpected trailing text after def block: {tail}"
+                        ));
+                    }
+                }
+                if let Some(block) = brace_block {
+                    if should_execute {
+                        self.state.functions.insert(
+                            name.to_string(),
+                            FunctionDef {
+                                body: FunctionBody::Inline(block),
+                            },
+                        );
+                    }
+                    idx += 1;
+                    continue;
+                }
+
+                if brace_open {
+                    let (block_lines, end_idx, tail_line) =
+                        collect_brace_block(&self.lines, idx + 1, brace_tail)?;
+                    if let Some(tail) = tail_line {
+                        return Err(format!(
+                            "unexpected trailing text after def block: {tail}"
+                        ));
+                    }
+                    if should_execute {
+                        self.state.functions.insert(
+                            name.to_string(),
+                            FunctionDef {
+                                body: FunctionBody::Block(block_lines),
+                            },
+                        );
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+                if should_execute {
+                    let raw_lines = self.lines[block_start..block_end].to_vec();
+                    let block_lines = unindent_block_lines(&raw_lines);
+                    self.state.functions.insert(
+                        name.to_string(),
+                        FunctionDef {
+                            body: FunctionBody::Block(block_lines),
+                        },
+                    );
+                }
+                idx = block_end;
                 continue;
             }
 
@@ -1802,7 +2005,14 @@ impl<'a> ScriptContext<'a> {
                     if should_execute {
                         for value in list {
                             self.state.set_var(var_name, value);
-                            execute_inline_block(&block, self.state)?;
+                            if let FlowControl::Return(code) =
+                                execute_inline_block(&block, self.state)?
+                            {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Return(code),
+                                });
+                            }
                         }
                     }
                     idx += 1;
@@ -1819,11 +2029,20 @@ impl<'a> ScriptContext<'a> {
                                 lines: block_lines.clone(),
                                 state: self.state,
                             };
-                            if ctx.execute_with_exit()? {
-                                return Ok(BlockResult {
-                                    next: end_idx + 1,
-                                    exit: true,
-                                });
+                            match ctx.execute_with_exit()? {
+                                FlowControl::Exit => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
+                                FlowControl::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::None => {}
                             }
                         }
                     }
@@ -1844,7 +2063,7 @@ impl<'a> ScriptContext<'a> {
                     for value in list {
                         self.state.set_var(var_name, value);
                         let result = self.execute_block(block_start, indent_level + 1, true)?;
-                        if result.exit {
+                        if result.flow != FlowControl::None {
                             return Ok(result);
                         }
                     }
@@ -1854,11 +2073,22 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
-            if should_execute && !process_line_raw(&trimmed, &mut self.state) {
-                return Ok(BlockResult {
-                    next: idx + 1,
-                    exit: true,
-                });
+            if should_execute {
+                match process_line_raw(&trimmed, &mut self.state) {
+                    FlowControl::Exit => {
+                        return Ok(BlockResult {
+                            next: idx + 1,
+                            flow: FlowControl::Exit,
+                        });
+                    }
+                    FlowControl::Return(code) => {
+                        return Ok(BlockResult {
+                            next: idx + 1,
+                            flow: FlowControl::Return(code),
+                        });
+                    }
+                    FlowControl::None => {}
+                }
             }
 
             idx += 1;
@@ -1866,7 +2096,7 @@ impl<'a> ScriptContext<'a> {
 
         Ok(BlockResult {
             next: idx,
-            exit: false,
+            flow: FlowControl::None,
         })
     }
 
@@ -1875,7 +2105,7 @@ impl<'a> ScriptContext<'a> {
         mut idx: usize,
         indent_level: usize,
         should_execute: bool,
-    ) -> Result<(bool, usize, bool), String> {
+    ) -> Result<(FlowControl, usize, bool), String> {
         let mut handled = false;
         while idx < self.lines.len() {
             let line = self.lines[idx].clone();
@@ -1927,7 +2157,7 @@ impl<'a> ScriptContext<'a> {
             break;
         }
 
-        Ok((false, idx, handled))
+        Ok((FlowControl::None, idx, handled))
     }
 
     fn handle_else_chain_tail(
@@ -1936,7 +2166,7 @@ impl<'a> ScriptContext<'a> {
         idx: usize,
         indent_level: usize,
         should_execute: bool,
-    ) -> Result<(bool, usize, bool), String> {
+    ) -> Result<(FlowControl, usize, bool), String> {
         if let Some(tail) = tail_line {
             let trimmed = expand_aliases_in_line(tail.trim(), self.state)?;
             if trimmed.starts_with("elif ") {
@@ -1960,7 +2190,7 @@ impl<'a> ScriptContext<'a> {
         indent_level: usize,
         should_execute: bool,
         is_elif: bool,
-    ) -> Result<(bool, usize, bool), String> {
+    ) -> Result<(FlowControl, usize, bool), String> {
         let brace = parse_brace_block(rest);
         let (condition, brace_block, brace_open, brace_tail, brace_inline_tail) = match brace {
             BraceParse::Inline { head, body, tail } => (head, Some(body), false, None, tail),
@@ -1980,7 +2210,11 @@ impl<'a> ScriptContext<'a> {
 
         if let Some(block) = brace_block {
             if run_child {
-                execute_inline_block(&block, self.state)?;
+                if let FlowControl::Return(code) =
+                    execute_inline_block(&block, self.state)?
+                {
+                    return Ok((FlowControl::Return(code), block_start + 1, true));
+                }
                 if let Some(tail) = brace_inline_tail {
                     let (exit, next_idx, _) = self.handle_else_chain_tail(
                         Some(tail),
@@ -2013,8 +2247,12 @@ impl<'a> ScriptContext<'a> {
                     lines: block_lines,
                     state: self.state,
                 };
-                if ctx.execute_with_exit()? {
-                    return Ok((true, end_idx + 1, true));
+                match ctx.execute_with_exit()? {
+                    FlowControl::Exit => return Ok((FlowControl::Exit, end_idx + 1, true)),
+                    FlowControl::Return(code) => {
+                        return Ok((FlowControl::Return(code), end_idx + 1, true))
+                    }
+                    FlowControl::None => {}
                 }
                 if let Some(tail) = tail_line {
                     let (exit, next_idx, _) = self.handle_else_chain_tail(
@@ -2041,16 +2279,19 @@ impl<'a> ScriptContext<'a> {
         }
 
         let result = self.execute_block(block_start, indent_level + 1, run_child)?;
-        if result.exit {
-            return Ok((true, result.next, true));
+        if result.flow == FlowControl::Exit {
+            return Ok((FlowControl::Exit, result.next, true));
+        }
+        if let FlowControl::Return(code) = result.flow {
+            return Ok((FlowControl::Return(code), result.next, true));
         }
         if run_child {
-            return Ok((false, result.next, true));
+            return Ok((FlowControl::None, result.next, true));
         }
         self.handle_else_chain(result.next, indent_level, should_execute && !run_child)
     }
 
-    fn evaluate_condition(&self, command: &str) -> Result<bool, String> {
+    fn evaluate_condition(&mut self, command: &str) -> Result<bool, String> {
         let args = parse_args(command)?;
         if args.is_empty() {
             return Ok(false);
@@ -2058,7 +2299,10 @@ impl<'a> ScriptContext<'a> {
         let expanded = expand_tokens(args, &self.state)?;
 
         match Command::new(&expanded[0]).args(&expanded[1..]).status() {
-            Ok(status) => Ok(status.success()),
+            Ok(status) => {
+                self.state.last_status = exit_status_code(&status);
+                Ok(status.success())
+            }
             Err(err) => Err(format!(
                 "failed to execute condition '{}': {err}",
                 expanded[0]
@@ -2094,7 +2338,7 @@ fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
     stdout.flush()
 }
 
-fn execute_with_status(args: &[String]) -> bool {
+fn execute_with_status(args: &[String], state: &mut ShellState) -> bool {
     if args.is_empty() {
         return true;
     }
@@ -2102,10 +2346,12 @@ fn execute_with_status(args: &[String]) -> bool {
     match Command::new(&args[0]).args(&args[1..]).status() {
         Ok(status) => {
             report_status(&args[0], status);
+            state.last_status = exit_status_code(&status);
             status.success()
         }
         Err(err) => {
             eprintln!("unshell: failed to execute '{}': {err}", args[0]);
+            state.last_status = 1;
             false
         }
     }
@@ -2134,6 +2380,7 @@ fn execute_with_status_capture(args: &[String], state: &mut ShellState) -> Resul
         .map_err(|err| format!("failed to wait on '{}': {err}", args[0]))?;
     update_last_output(state, last_byte);
     report_status(&args[0], status);
+    state.last_status = exit_status_code(&status);
     Ok(status.success())
 }
 
@@ -2173,4 +2420,8 @@ fn report_status(cmd: &str, status: ExitStatus) {
     } else if !status.success() {
         eprintln!("unshell: '{}' terminated by signal", cmd);
     }
+}
+
+fn exit_status_code(status: &ExitStatus) -> i32 {
+    status.code().unwrap_or(1)
 }

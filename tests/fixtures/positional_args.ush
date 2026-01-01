@@ -1,0 +1,8 @@
+temp=[mktemp /tmp/ush-args-XXXXXX]
+echo 'echo "script-1=$1"' | tee -a $temp | true
+echo 'echo "script-2=$2"' | tee -a $temp | true
+echo 'echo "script-count=$#"' | tee -a $temp | true
+echo 'printf "script-star=%s|\\n" $*' | tee -a $temp | true
+echo 'printf "script-quoted=%s|\\n" "$*"' | tee -a $temp | true
+bin=[pwd]/target/debug/ush
+$bin --norc $temp "a b" c

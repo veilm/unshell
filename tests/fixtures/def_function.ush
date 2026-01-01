@@ -1,0 +1,28 @@
+def greeting
+	echo "hello $1"
+
+def check
+	local name=$1
+	echo "name=$name"
+	if [ $name = ok ]
+		return 0
+	return 2
+
+def scope
+	local x=inner
+	echo "inner=$x"
+
+def scope2 { local y=inner2 ; echo y=$y }
+
+greeting Bob
+check ok
+echo "status=$?"
+check ok && echo "after-ok"
+check nope && echo "after-nope"
+check nope || echo "after-fail"
+echo "after-name=$name"
+scope
+echo "outer=$x"
+y=outer2
+scope2
+echo "outer y=$y"

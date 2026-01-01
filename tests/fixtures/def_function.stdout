@@ -1,0 +1,13 @@
+hello Bob
+name=ok
+status=0
+name=ok
+after-ok
+name=nope
+name=nope
+after-fail
+after-name=
+inner=inner
+outer=
+y=inner2
+outer y=outer2

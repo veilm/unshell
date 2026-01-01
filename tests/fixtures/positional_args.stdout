@@ -1,0 +1,6 @@
+script-1=a b
+script-2=c
+script-count=2
+script-star=a b|
+script-star=c|
+script-quoted=a b c|

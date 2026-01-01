@@ -14,6 +14,17 @@ pub struct ShellOptions {
 }
 
 #[derive(Clone)]
+pub enum FunctionBody {
+    Inline(String),
+    Block(Vec<String>),
+}
+
+#[derive(Clone)]
+pub struct FunctionDef {
+    pub body: FunctionBody,
+}
+
+#[derive(Clone)]
 pub struct AliasEntry {
     pub value: String,
     pub global: bool,
@@ -35,18 +46,25 @@ pub struct ReplOptions {
 
 pub struct ShellState {
     pub vars: HashMap<String, String>,
+    pub locals_stack: Vec<HashMap<String, String>>,
+    pub functions: HashMap<String, FunctionDef>,
     pub aliases: HashMap<String, AliasEntry>,
     pub options: ShellOptions,
     pub repl: ReplOptions,
     pub interactive: bool,
     pub last_output_newline: bool,
     pub needs_cursor_check: bool,
+    pub positional: Vec<String>,
+    pub positional_stack: Vec<Vec<String>>,
+    pub last_status: i32,
 }
 
 impl ShellState {
     pub fn new() -> Self {
         Self {
             vars: HashMap::new(),
+            locals_stack: Vec::new(),
+            functions: HashMap::new(),
             aliases: HashMap::new(),
             options: ShellOptions {
                 aliases_recursive: true,
@@ -63,11 +81,22 @@ impl ShellState {
             interactive: false,
             last_output_newline: true,
             needs_cursor_check: false,
+            positional: Vec::new(),
+            positional_stack: Vec::new(),
+            last_status: 0,
         }
     }
 
     pub fn set_var(&mut self, name: &str, value: String) {
         self.vars.insert(name.to_string(), value);
+    }
+
+    pub fn set_local_var(&mut self, name: &str, value: String) -> Result<(), String> {
+        if let Some(frame) = self.locals_stack.last_mut() {
+            frame.insert(name.to_string(), value);
+            return Ok(());
+        }
+        Err("local: not in function".into())
     }
 
     pub fn set_alias(&mut self, name: &str, value: String, global: bool) {
@@ -132,6 +161,42 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
         write_u32(&mut file, value.len() as u32)?;
         file.write_all(value.as_bytes())?;
     }
+    write_u32(&mut file, state.locals_stack.len() as u32)?;
+    for frame in state.locals_stack.iter() {
+        write_u32(&mut file, frame.len() as u32)?;
+        for (name, value) in frame.iter() {
+            write_u32(&mut file, name.len() as u32)?;
+            file.write_all(name.as_bytes())?;
+            write_u32(&mut file, value.len() as u32)?;
+            file.write_all(value.as_bytes())?;
+        }
+    }
+    write_u32(&mut file, state.functions.len() as u32)?;
+    for (name, func) in state.functions.iter() {
+        write_u32(&mut file, name.len() as u32)?;
+        file.write_all(name.as_bytes())?;
+        match &func.body {
+            FunctionBody::Inline(body) => {
+                write_bool(&mut file, true)?;
+                write_u32(&mut file, body.len() as u32)?;
+                file.write_all(body.as_bytes())?;
+            }
+            FunctionBody::Block(lines) => {
+                write_bool(&mut file, false)?;
+                write_u32(&mut file, lines.len() as u32)?;
+                for line in lines {
+                    write_u32(&mut file, line.len() as u32)?;
+                    file.write_all(line.as_bytes())?;
+                }
+            }
+        }
+    }
+    write_u32(&mut file, state.positional.len() as u32)?;
+    for value in state.positional.iter() {
+        write_u32(&mut file, value.len() as u32)?;
+        file.write_all(value.as_bytes())?;
+    }
+    write_i32(&mut file, state.last_status)?;
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -187,10 +252,82 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         })?;
         state.options.expansions_handler.push(value);
     }
+    let locals_count = read_u32(&mut file)? as usize;
+    state.locals_stack = Vec::with_capacity(locals_count);
+    for _ in 0..locals_count {
+        let frame_len = read_u32(&mut file)? as usize;
+        let mut frame = HashMap::with_capacity(frame_len);
+        for _ in 0..frame_len {
+            let name_len = read_u32(&mut file)? as usize;
+            let mut name_buf = vec![0u8; name_len];
+            file.read_exact(&mut name_buf)?;
+            let value_len = read_u32(&mut file)? as usize;
+            let mut value_buf = vec![0u8; value_len];
+            file.read_exact(&mut value_buf)?;
+            let name = String::from_utf8(name_buf)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals name not utf-8"))?;
+            let value = String::from_utf8(value_buf).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "locals value not utf-8")
+            })?;
+            frame.insert(name, value);
+        }
+        state.locals_stack.push(frame);
+    }
+    let funcs_len = read_u32(&mut file)? as usize;
+    for _ in 0..funcs_len {
+        let name_len = read_u32(&mut file)? as usize;
+        let mut name_buf = vec![0u8; name_len];
+        file.read_exact(&mut name_buf)?;
+        let name = String::from_utf8(name_buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "function name not utf-8"))?;
+        let inline = read_bool(&mut file)?;
+        let body = if inline {
+            let body_len = read_u32(&mut file)? as usize;
+            let mut body_buf = vec![0u8; body_len];
+            file.read_exact(&mut body_buf)?;
+            let body = String::from_utf8(body_buf).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "function body not utf-8")
+            })?;
+            FunctionBody::Inline(body)
+        } else {
+            let line_count = read_u32(&mut file)? as usize;
+            let mut lines = Vec::with_capacity(line_count);
+            for _ in 0..line_count {
+                let line_len = read_u32(&mut file)? as usize;
+                let mut line_buf = vec![0u8; line_len];
+                file.read_exact(&mut line_buf)?;
+                let line = String::from_utf8(line_buf).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "function line not utf-8")
+                })?;
+                lines.push(line);
+            }
+            FunctionBody::Block(lines)
+        };
+        state
+            .functions
+            .insert(name, FunctionDef { body });
+    }
+    let positional_len = read_u32(&mut file)? as usize;
+    state.positional = Vec::with_capacity(positional_len);
+    for _ in 0..positional_len {
+        let value_len = read_u32(&mut file)? as usize;
+        let mut value_buf = vec![0u8; value_len];
+        file.read_exact(&mut value_buf)?;
+        let value = String::from_utf8(value_buf).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "positional arg not utf-8")
+        })?;
+        state.positional.push(value);
+    }
+    state.last_status = read_i32(&mut file)?;
     Ok(state)
 }
 
 pub fn lookup_var(state: &ShellState, name: &str) -> String {
+    for frame in state.locals_stack.iter().rev() {
+        if let Some(value) = frame.get(name) {
+            return value.clone();
+        }
+    }
     if let Some(value) = state.vars.get(name) {
         return value.clone();
     }
@@ -244,4 +381,14 @@ fn read_bool<R: Read>(reader: &mut R) -> io::Result<bool> {
     let mut buf = [0u8; 1];
     reader.read_exact(&mut buf)?;
     Ok(buf[0] != 0)
+}
+
+fn write_i32<W: Write>(writer: &mut W, value: i32) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn read_i32<R: Read>(reader: &mut R) -> io::Result<i32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(i32::from_le_bytes(buf))
 }

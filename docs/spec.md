@@ -6,7 +6,7 @@
 - Composability beats magic syntax: every transformation should look like ordinary command plumbing.
 
 ## Status
-- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, `&&`, and `||` chaining, ships `cd`, `export`, `alias`, `unalias`, `set`, and `eval` built-ins, supports recursive/global alias expansion controls, toggles capture newline trimming, delegates token expansion to external handlers, supports startup sourcing for interactive sessions, and ships an optional rustyline-backed REPL with vi mode, history, file completion (fzf when available), and basic highlighting. Integration fixtures cover the current surface area (`cargo test`).
+- **Implemented:** `ush` builds via Cargo/Makefile, executes plaintext manifests line-by-line (with `exit` handling), supports square-bracket captures (including inline concatenation and nesting, while `[ ` stays literal), handles `$[]`/`$()` captures inside double-quoted strings, evaluates tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks in scripts, provides atomic variable assignment/expansion, supports the `...` spread operator, runs `foreach` as a pipeline stage in a child process (pipeable onward), executes `|`, `;`, `&&`, and `||` chaining, ships `cd`, `export`, `alias`, `unalias`, `set`, `local`, `return`, and `eval` built-ins, supports `def` functions in the parent context, exposes positional args via `$1`/`$2`/`$#`/`$*`/`$?`, supports recursive/global alias expansion controls, toggles capture newline trimming, delegates token expansion to external handlers, supports startup sourcing for interactive sessions, and ships an optional rustyline-backed REPL with vi mode, history, file completion (fzf when available), and basic highlighting. Integration fixtures cover the current surface area (`cargo test`).
 - **Next up:** expansion handler ergonomics (error reporting, richer examples).
 
 ## Features
@@ -91,6 +91,27 @@ if test -f config.toml {
 }
 ```
 
+### Functions: `def`
+`def name` defines a function using either a tab-indented block or brace-delimited block. Functions run in the parent shell (no subshell), so they can mutate variables and the working directory. `return STATUS_HERE` ends the current function and sets `$?` to the given status (defaults to the last command status). `local name=value` creates a function-scoped variable; normal assignments remain global. To prevent runaway recursion, function calls are capped at a small fixed depth.
+```bash
+def greeting
+	echo "hello $1"
+
+def maybe
+	local name=$1
+	if [ $name = ok ]
+		return 0
+	return 2
+```
+
+### Positional Arguments
+Scripts and functions expose positional args as `$1`, `$2`, ...; `$#` is the count; `$*` expands to the list (unquoted yields multiple args, quoted joins with spaces); `$?` is the last status. There is therefore no need for `$@`.
+```bash
+echo "args=$#"           # count
+printf "%s|" $*          # each arg
+printf "%s|" "$*"        # joined into one string
+```
+
 ### Argument Loops: `for … in`
 `for name in arglist` iterates over a fully realized list of arguments (typically produced with `...`). Each iteration binds `name` without exporting it.
 ```bash
@@ -134,7 +155,7 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
+The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `eval`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"
 unalias ll

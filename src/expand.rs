@@ -74,6 +74,31 @@ fn expand_tokens_with_meta_inner(
             continue;
         }
 
+        if token == "$*" {
+            if state.positional.is_empty() {
+                continue;
+            }
+            for value in state.positional.iter() {
+                if should_expand_with_handler(value, state) {
+                    let replacements = run_expansion_handler(value, state)?;
+                    for replacement in replacements {
+                        expanded.push(ExpandedToken {
+                            value: replacement,
+                            protected: false,
+                            allow_split: false,
+                        });
+                    }
+                } else {
+                    expanded.push(ExpandedToken {
+                        value: value.clone(),
+                        protected: false,
+                        allow_split: false,
+                    });
+                }
+            }
+            continue;
+        }
+
         let protected = token.contains('"') || token.contains('\'');
         let allow_split = from_spread || token_contains_operator(&token);
         let value = if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
@@ -248,6 +273,28 @@ pub fn expand_unquoted_token(token: &str, state: &ShellState) -> Result<String, 
                     idx = next_idx;
                     continue;
                 }
+            } else if next == '*' {
+                result.push_str(&positional_joined(state));
+                idx += 2;
+                continue;
+            } else if next == '#' {
+                result.push_str(&state.positional.len().to_string());
+                idx += 2;
+                continue;
+            } else if next == '?' {
+                result.push_str(&state.last_status.to_string());
+                idx += 2;
+                continue;
+            } else if next.is_ascii_digit() {
+                let (index, next_idx) = read_positional_index(&chars, idx + 1);
+                let value = if index == 0 {
+                    String::new()
+                } else {
+                    state.positional.get(index - 1).cloned().unwrap_or_default()
+                };
+                result.push_str(&value);
+                idx = next_idx;
+                continue;
             } else if is_var_start(next) {
                 let (name, next_idx) = read_var_name(&chars, idx + 1);
                 let value = lookup_var(state, &name);
@@ -306,6 +353,23 @@ pub fn expand_string_literal(body: &str, state: &ShellState) -> Result<Vec<Strin
                 let capture = read_until_closing(&mut chars, ')')?;
                 let value =
                     run_capture(&capture, state).map_err(|err| format!("capture failed: {err}"))?;
+                result.push_str(&value);
+            } else if chars.peek() == Some(&'*') {
+                chars.next();
+                result.push_str(&positional_joined(state));
+            } else if chars.peek() == Some(&'#') {
+                chars.next();
+                result.push_str(&state.positional.len().to_string());
+            } else if chars.peek() == Some(&'?') {
+                chars.next();
+                result.push_str(&state.last_status.to_string());
+            } else if matches!(chars.peek(), Some(next) if next.is_ascii_digit()) {
+                let index = read_digits_iter(&mut chars);
+                let value = if index == 0 {
+                    String::new()
+                } else {
+                    state.positional.get(index - 1).cloned().unwrap_or_default()
+                };
                 result.push_str(&value);
             } else if matches!(chars.peek(), Some(next) if is_var_start(*next)) {
                 let name = read_var_name_iter(&mut chars);
@@ -407,6 +471,36 @@ pub fn is_var_start(ch: char) -> bool {
 
 pub fn is_var_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn positional_joined(state: &ShellState) -> String {
+    state.positional.join(" ")
+}
+
+fn read_positional_index(chars: &[char], start: usize) -> (usize, usize) {
+    let mut idx = start;
+    while idx < chars.len() && chars[idx].is_ascii_digit() {
+        idx += 1;
+    }
+    let digits: String = chars[start..idx].iter().collect();
+    let index = digits.parse::<usize>().unwrap_or(0);
+    (index, idx)
+}
+
+fn read_digits_iter<I>(chars: &mut std::iter::Peekable<I>) -> usize
+where
+    I: Iterator<Item = char>,
+{
+    let mut digits = String::new();
+    while let Some(ch) = chars.peek() {
+        if ch.is_ascii_digit() {
+            digits.push(*ch);
+            chars.next();
+        } else {
+            break;
+        }
+    }
+    digits.parse::<usize>().unwrap_or(0)
 }
 
 fn read_capture<I>(chars: &mut I) -> Result<String, String>

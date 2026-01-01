@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::state::{create_temp_file, read_locals_file, write_locals_file, ShellState, TempFileGuard};
-use crate::{execute_inline_block, ScriptContext};
+use crate::{execute_inline_block, FlowControl, ScriptContext};
 
 pub struct ForeachWorkerArgs {
     pub var: String,
@@ -34,15 +34,23 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
         trim_trailing_newline(&mut line);
         state.set_var(&opts.var, line);
         if opts.inline {
-            execute_inline_block(&block, &mut state)?;
+            if let FlowControl::Return(_) = execute_inline_block(&block, &mut state)? {
+                return Err("return not allowed in foreach".into());
+            }
         } else {
             let mut ctx = ScriptContext {
                 lines: block.lines().map(|s| s.to_string()).collect(),
                 state: &mut state,
             };
-            if ctx.execute_with_exit()? {
-                exit_requested = true;
-                break;
+            match ctx.execute_with_exit()? {
+                FlowControl::Exit => {
+                    exit_requested = true;
+                    break;
+                }
+                FlowControl::Return(_) => {
+                    return Err("return not allowed in foreach".into());
+                }
+                FlowControl::None => {}
             }
         }
     }
@@ -67,8 +75,10 @@ pub fn run_capture_worker(args: &[String]) -> Result<(), String> {
         lines: vec![script],
         state: &mut state,
     };
-    if ctx.execute_with_exit()? {
-        return Err("exit not allowed in capture".into());
+    match ctx.execute_with_exit()? {
+        FlowControl::Exit => return Err("exit not allowed in capture".into()),
+        FlowControl::Return(_) => return Err("return not allowed in capture".into()),
+        FlowControl::None => {}
     }
     Ok(())
 }
