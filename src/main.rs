@@ -2326,7 +2326,8 @@ impl<'a> ScriptContext<'a> {
             return Ok((FlowControl::Return(code), result.next, true));
         }
         if run_child {
-            return Ok((FlowControl::None, result.next, true));
+            let (exit, next_idx, _) = self.handle_else_chain(result.next, indent_level, false)?;
+            return Ok((exit, next_idx, true));
         }
         self.handle_else_chain(result.next, indent_level, should_execute && !run_child)
     }

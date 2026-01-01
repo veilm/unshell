@@ -1,0 +1,11 @@
+def pick
+	if [ $1 = a ]
+		echo A
+	elif [ $1 = b ]
+		echo B
+	else
+		echo C
+
+pick a
+pick b
+pick c
