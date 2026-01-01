@@ -1,0 +1,5 @@
+if true
+	def g
+		echo "nested $1"
+
+g one

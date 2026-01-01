@@ -875,6 +875,23 @@ fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
     None
 }
 
+fn unindent_block_lines_by(lines: &[String], tabs: usize) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            let mut rest = line.as_str();
+            for _ in 0..tabs {
+                if let Some(next) = rest.strip_prefix('\t') {
+                    rest = next;
+                } else {
+                    break;
+                }
+            }
+            rest.to_string()
+        })
+        .collect()
+}
+
 fn build_pipeline_commands_from_token_segments(
     segments: &[Vec<String>],
     state: &mut ShellState,
@@ -1809,7 +1826,7 @@ impl<'a> ScriptContext<'a> {
                 let block_end = self.find_block_end(block_start, indent_level + 1);
                 if should_execute {
                     let raw_lines = self.lines[block_start..block_end].to_vec();
-                    let block_lines = unindent_block_lines(&raw_lines);
+                    let block_lines = unindent_block_lines_by(&raw_lines, indent_level + 1);
                     self.state.functions.insert(
                         name.to_string(),
                         FunctionDef {
