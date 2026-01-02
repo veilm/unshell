@@ -1,0 +1,4 @@
+printf "a\nb\n" | {
+echo hello
+cat
+} | tail -n 1

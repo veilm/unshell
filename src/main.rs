@@ -2567,6 +2567,100 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
+            let brace = parse_brace_block(&trimmed);
+            match brace {
+                BraceParse::Inline { head, body, tail } => {
+                    if head.trim().is_empty() {
+                        if should_execute {
+                            if let Some(tail) = tail {
+                                let mut stages = Vec::new();
+                                stages.push(PipelineStage::Block(InlineBlock {
+                                    block: body,
+                                    redirs: Redirections::default(),
+                                }));
+                                let mut after = Vec::new();
+                                append_pipeline_tail(&mut after, &tail)?;
+                                let mut after_stages =
+                                    build_pipeline_stages_from_segments(&after, self.state)?;
+                                stages.append(&mut after_stages);
+                                run_pipeline_stages(stages, self.state)?;
+                            } else if let FlowControl::Return(code) =
+                                execute_inline_block(&body, self.state)?
+                            {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Return(code),
+                                });
+                            }
+                        }
+                        idx += 1;
+                        continue;
+                    }
+                }
+                BraceParse::Open { head, tail } => {
+                    let head_trim = head.trim_end();
+                if head_trim.is_empty() || head_trim.ends_with('|') {
+                    let (block_lines, end_idx, tail_line) =
+                        collect_brace_block(&self.lines, idx + 1, Some(tail))?;
+                    let block = block_lines.join("\n");
+                    let mut after = Vec::new();
+                    if let Some(tail_line) = tail_line.as_deref() {
+                        append_pipeline_tail(&mut after, tail_line)?;
+                    }
+                    if should_execute {
+                        if head_trim.is_empty() && after.is_empty() {
+                            let mut ctx = ScriptContext {
+                                lines: block_lines,
+                                state: self.state,
+                            };
+                            match ctx.execute_with_exit()? {
+                                FlowControl::Exit => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
+                                FlowControl::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::None => {}
+                            }
+                        } else {
+                            let mut stages = Vec::new();
+                            let head_before = head_trim
+                                .strip_suffix('|')
+                                .unwrap_or(head_trim)
+                                .trim_end();
+                            if !head_before.is_empty() {
+                                let before_segments = split_on_pipes(head_before)
+                                    .into_iter()
+                                    .map(|seg| seg.trim().to_string())
+                                    .filter(|seg| !seg.is_empty())
+                                    .collect::<Vec<_>>();
+                                let mut before_stages =
+                                    build_pipeline_stages_from_segments(&before_segments, self.state)?;
+                                stages.append(&mut before_stages);
+                            }
+                            stages.push(PipelineStage::Block(InlineBlock {
+                                block,
+                                redirs: Redirections::default(),
+                            }));
+                            let mut after_stages =
+                                build_pipeline_stages_from_segments(&after, self.state)?;
+                            stages.append(&mut after_stages);
+                            run_pipeline_stages(stages, self.state)?;
+                        }
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+                }
+                BraceParse::None { .. } => {}
+            }
+
             let foreach_tokens = if trimmed.contains("...") {
                 let tokens = expand_line_tokens_spread_only(&trimmed, self.state)?;
                 parse_foreach_tokens(&tokens)

@@ -121,11 +121,23 @@ pub fn run_block_worker(args: &[String]) -> Result<i32, String> {
         .map_err(|err| format!("failed to load block locals: {err}"))?;
     let block = read_block_file(&opts.block_path)
         .map_err(|err| format!("failed to read block: {err}"))?;
-    match execute_inline_block(&block, &mut state) {
-        Ok(FlowControl::Return(_)) => Err("return not allowed in inline block".into()),
-        Ok(FlowControl::None) => Ok(state.last_status),
-        Ok(FlowControl::Exit) => Ok(state.last_status),
-        Err(err) => Err(err),
+    if block.contains('\n') {
+        let mut ctx = ScriptContext {
+            lines: block.lines().map(|s| s.to_string()).collect(),
+            state: &mut state,
+        };
+        match ctx.execute_with_exit()? {
+            FlowControl::Return(_) => Err("return not allowed in inline block".into()),
+            FlowControl::Exit => Ok(state.last_status),
+            FlowControl::None => Ok(state.last_status),
+        }
+    } else {
+        match execute_inline_block(&block, &mut state) {
+            Ok(FlowControl::Return(_)) => Err("return not allowed in inline block".into()),
+            Ok(FlowControl::None) => Ok(state.last_status),
+            Ok(FlowControl::Exit) => Ok(state.last_status),
+            Err(err) => Err(err),
+        }
     }
 }
 

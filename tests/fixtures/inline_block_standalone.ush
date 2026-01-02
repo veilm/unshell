@@ -1,0 +1,9 @@
+x=old
+{ echo hi ; x=changed }
+echo x=$x
+
+{
+echo hi2
+x=reverted
+}	
+echo x=$x

@@ -9,7 +9,7 @@
 
 ### Execution & Pipes
 Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` sequences commands unconditionally, and `&&`/`||` short-circuit on success/failure. There is no special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
-Pipeline segments may be functions or inline brace blocks; these run in a subprocess and do not mutate parent shell state.
+Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
 Non-zero exit codes only update `$?` and do not emit warnings by default.
 Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
 ```bash
