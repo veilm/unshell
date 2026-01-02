@@ -1,0 +1,3 @@
+def foo { echo cat ; echo dog }
+foo | grep cat
+echo status=$?

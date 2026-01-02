@@ -13,6 +13,7 @@ def scope
 	echo "inner=$x"
 
 def scope2 { local y=inner2 ; echo y=$y }
+def scope3 { z=inner3 ; echo z=$z }
 
 greeting Bob
 check ok
@@ -26,3 +27,6 @@ echo "outer=$x"
 y=outer2
 scope2
 echo "outer y=$y"
+z=outer3
+scope3
+echo "outer z=$z"

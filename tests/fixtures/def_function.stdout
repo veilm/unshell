@@ -11,3 +11,5 @@ inner=inner
 outer=
 y=inner2
 outer y=outer2
+z=inner3
+outer z=inner3

@@ -21,10 +21,12 @@ use crate::expand::{
 };
 use crate::parser::{
     append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
-    split_indent, split_on_pipes, split_on_semicolons, unindent_block_lines, BraceParse, LogicOp,
+    split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
 };
 use crate::state::{lookup_var, write_locals_file, FunctionBody, FunctionDef, ShellState};
-use crate::workers::{run_capture_worker, run_foreach_worker, write_block_file};
+use crate::workers::{
+    run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file,
+};
 #[cfg(not(feature = "repl"))]
 use crate::term::cursor_column;
 
@@ -39,6 +41,24 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if args.len() > 1 && args[1] == "--function-worker" {
+        match run_function_worker(&args[2..]) {
+            Ok(code) => std::process::exit(code),
+            Err(err) => {
+                eprintln!("unshell: {err}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if args.len() > 1 && args[1] == "--block-worker" {
+        match run_block_worker(&args[2..]) {
+            Ok(code) => std::process::exit(code),
+            Err(err) => {
+                eprintln!("unshell: {err}");
+                std::process::exit(1);
+            }
+        }
     }
     if args.len() > 1 && args[1] == "--capture-worker" {
         if let Err(err) = run_capture_worker(&args[2..]) {
@@ -280,7 +300,7 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
         return FlowControl::None;
     }
 
-    let tokens = match expand_line_tokens(trimmed, state) {
+    let tokens = match raw_line_tokens(trimmed, state) {
         Ok(tokens) => tokens,
         Err(err) => {
             eprintln!("unshell: {err}");
@@ -294,28 +314,39 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
         if sequence.is_empty() {
             continue;
         }
-            let chain = match split_tokens_on_and_or(&sequence) {
-                Ok(chain) => chain,
-                Err(err) => {
-                    eprintln!("unshell: {err}");
-                    state.last_status = 1;
-                    continue;
-                }
-            };
-            let mut last_success = true;
-            for (op, segment) in chain {
-                if segment.is_empty() {
-                    continue;
+        let chain = match split_tokens_on_and_or(&sequence) {
+            Ok(chain) => chain,
+            Err(err) => {
+                eprintln!("unshell: {err}");
+                state.last_status = 1;
+                continue;
+            }
+        };
+        let mut last_success = true;
+        for (op, segment) in chain {
+            if segment.is_empty() {
+                continue;
             }
             match op {
                 LogicOp::And if !last_success => continue,
                 LogicOp::Or if last_success => continue,
                 _ => {}
             }
-            match run_pipeline_tokens(&segment, state) {
-                Ok(RunResult::Exit) => return FlowControl::Exit,
-                Ok(RunResult::Return(code)) => return FlowControl::Return(code),
-                Ok(RunResult::Success(success)) => last_success = success,
+            let expanded = match expand_op_tokens(&segment, state) {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    eprintln!("unshell: {err}");
+                    last_success = false;
+                    state.last_status = 1;
+                    continue;
+                }
+            };
+            match run_expanded_tokens(&expanded, state) {
+                Ok(FlowControl::Exit) => return FlowControl::Exit,
+                Ok(FlowControl::Return(code)) => return FlowControl::Return(code),
+                Ok(FlowControl::None) => {
+                    last_success = state.last_status == 0;
+                }
                 Err(err) => {
                     eprintln!("unshell: {err}");
                     last_success = false;
@@ -325,6 +356,33 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
         }
     }
     FlowControl::None
+}
+
+fn run_expanded_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<FlowControl, String> {
+    let sequences = split_tokens_on_semicolons(tokens);
+    for sequence in sequences {
+        if sequence.is_empty() {
+            continue;
+        }
+        let chain = split_tokens_on_and_or(&sequence)?;
+        let mut last_success = true;
+        for (op, segment) in chain {
+            if segment.is_empty() {
+                continue;
+            }
+            match op {
+                LogicOp::And if !last_success => continue,
+                LogicOp::Or if last_success => continue,
+                _ => {}
+            }
+            match run_pipeline_tokens(&segment, state)? {
+                RunResult::Exit => return Ok(FlowControl::Exit),
+                RunResult::Return(code) => return Ok(FlowControl::Return(code)),
+                RunResult::Success(success) => last_success = success,
+            }
+        }
+    }
+    Ok(FlowControl::None)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,11 +432,68 @@ struct CommandSpec {
     redirs: Redirections,
 }
 
-fn expand_line_tokens(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>, String> {
+#[derive(Clone, Debug)]
+struct FunctionCall {
+    name: String,
+    args: Vec<String>,
+    redirs: Redirections,
+}
+
+#[derive(Clone, Debug)]
+struct InlineBlock {
+    block: String,
+    redirs: Redirections,
+}
+
+fn raw_line_tokens(line: &str, state: &ShellState) -> Result<Vec<OpToken>, String> {
     let args = parse_args(line)?;
     let args = apply_alias(args, state)?;
-    let expanded = expand_tokens_with_meta(args, state)?;
-    split_expanded_tokens(expanded)
+    let mut tokens = Vec::new();
+
+    for token in args {
+        if let Some(op) = token_to_operator(&token) {
+            tokens.push(OpToken::Op(op));
+            continue;
+        }
+        if contains_top_level_operator(&token) {
+            return Err("operators must be separated by whitespace".into());
+        }
+        tokens.push(OpToken::Word(WordToken {
+            value: token,
+            protected: false,
+        }));
+    }
+
+    Ok(tokens)
+}
+
+fn is_inline_block_token(token: &str) -> bool {
+    matches!(
+        parse_brace_block(token),
+        BraceParse::Inline { head, tail: None, .. } if head.trim().is_empty()
+    )
+}
+
+fn expand_op_tokens(tokens: &[OpToken], state: &ShellState) -> Result<Vec<OpToken>, String> {
+    let mut out = Vec::new();
+    for token in tokens {
+        match token {
+            OpToken::Op(op) => out.push(OpToken::Op(op.clone())),
+            OpToken::Word(word) => {
+                if is_inline_block_token(&word.value) {
+                    out.push(OpToken::Word(WordToken {
+                        value: word.value.clone(),
+                        protected: true,
+                    }));
+                    continue;
+                }
+                let expanded = expand_tokens_with_meta(vec![word.value.clone()], state)?;
+                let mut parts = split_expanded_tokens(expanded)?;
+                out.append(&mut parts);
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn expand_line_tokens_spread_only(line: &str, state: &mut ShellState) -> Result<Vec<OpToken>, String> {
@@ -467,10 +582,32 @@ fn contains_top_level_operator(token: &str) -> bool {
     let chars: Vec<char> = token.chars().collect();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
+    let mut brace_depth = 0;
+    let mut in_double = false;
+    let mut in_single = false;
     let mut idx = 0;
 
     while idx < chars.len() {
         let ch = chars[idx];
+
+        if in_double && ch == '\\' && paren_depth == 0 {
+            idx += 2;
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+                idx += 1;
+                continue;
+            }
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+                idx += 1;
+                continue;
+            }
+            _ => {}
+        }
 
         if ch == '$' && bracket_depth == 0 && paren_depth == 0 {
             if idx + 1 < chars.len() && chars[idx + 1] == '(' {
@@ -512,7 +649,25 @@ fn contains_top_level_operator(token: &str) -> bool {
             continue;
         }
 
-        if bracket_depth == 0 && paren_depth == 0 {
+        if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single {
+            if ch == '{' {
+                brace_depth += 1;
+                idx += 1;
+                continue;
+            }
+            if ch == '}' && brace_depth > 0 {
+                brace_depth -= 1;
+                idx += 1;
+                continue;
+            }
+        }
+
+        if bracket_depth == 0
+            && paren_depth == 0
+            && brace_depth == 0
+            && !in_double
+            && !in_single
+        {
             if ch == ';' || ch == '|' {
                 return true;
             }
@@ -969,9 +1124,45 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         return Ok(RunResult::Success(success));
     }
 
-    let mut pipeline_commands = Vec::new();
-    for command in commands {
-        let raw: Vec<String> = command.iter().map(|t| t.value.clone()).collect();
+    let stages = build_pipeline_stages_from_word_segments(commands, state)?;
+    run_pipeline_stages(stages, state).map(RunResult::Success)
+}
+
+fn build_pipeline_stages_from_word_segments(
+    segments: Vec<Vec<WordToken>>,
+    state: &mut ShellState,
+) -> Result<Vec<PipelineStage>, String> {
+    let mut stages = Vec::new();
+
+    for segment in segments {
+        if segment.is_empty() {
+            return Err("empty command in pipeline".into());
+        }
+
+        let segment_line = segment
+            .iter()
+            .map(|token| token.value.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let brace = parse_brace_block(&segment_line);
+        match brace {
+            BraceParse::Inline { head, body, tail } if head.trim().is_empty() => {
+                if let Some(tail) = tail {
+                    return Err(format!("unexpected trailing text after block: {tail}"));
+                }
+                stages.push(PipelineStage::Block(InlineBlock {
+                    block: body,
+                    redirs: Redirections::default(),
+                }));
+                continue;
+            }
+            BraceParse::Open { head, .. } if head.trim().is_empty() => {
+                return Err("inline block missing '}' in pipeline".into());
+            }
+            _ => {}
+        }
+
+        let raw: Vec<String> = segment.iter().map(|t| t.value.clone()).collect();
         let (assignments, remaining) = split_assignments(&raw);
         let assignments_len = assignments.len();
         for (name, value) in assignments {
@@ -980,7 +1171,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        let remaining_tokens: Vec<WordToken> = command
+        let remaining_tokens: Vec<WordToken> = segment
             .into_iter()
             .skip(assignments_len)
             .collect();
@@ -988,10 +1179,18 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         if args.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        pipeline_commands.push(CommandSpec { args, redirs });
+        if state.functions.contains_key(&args[0]) {
+            stages.push(PipelineStage::Function(FunctionCall {
+                name: args[0].clone(),
+                args: args[1..].to_vec(),
+                redirs,
+            }));
+            continue;
+        }
+        stages.push(PipelineStage::External(CommandSpec { args, redirs }));
     }
 
-    run_pipeline(pipeline_commands, state).map(RunResult::Success)
+    Ok(stages)
 }
 
 fn run_function(
@@ -1085,44 +1284,6 @@ fn unindent_block_lines_by(lines: &[String], tabs: usize) -> Vec<String> {
         .collect()
 }
 
-fn build_pipeline_commands_from_token_segments(
-    segments: &[Vec<String>],
-    state: &mut ShellState,
-) -> Result<Vec<CommandSpec>, String> {
-    let mut commands = Vec::new();
-
-    for segment in segments {
-        let expanded = expand_tokens_with_meta(segment.clone(), state)?;
-        let words: Vec<WordToken> = expanded
-            .into_iter()
-            .map(|token| WordToken {
-                value: token.value,
-                protected: token.protected,
-            })
-            .collect();
-        let raw_values: Vec<String> = words.iter().map(|t| t.value.clone()).collect();
-        let (assignments, remaining) = split_assignments(&raw_values);
-        let assignments_len = assignments.len();
-        for (name, value) in assignments {
-            state.set_var(&name, value);
-        }
-        if remaining.is_empty() {
-            return Err("empty command in pipeline".into());
-        }
-        let remaining_tokens: Vec<WordToken> = words
-            .into_iter()
-            .skip(assignments_len)
-            .collect();
-        let (args, redirs) = parse_redirections(remaining_tokens)?;
-        if args.is_empty() {
-            return Err("empty command in pipeline".into());
-        }
-        commands.push(CommandSpec { args, redirs });
-    }
-
-    Ok(commands)
-}
-
 fn build_pipeline_stages_from_token_segments(
     segments: &[Vec<String>],
     state: &mut ShellState,
@@ -1135,6 +1296,23 @@ fn build_pipeline_stages_from_token_segments(
         }
 
         let segment_line = segment.join(" ");
+        let brace = parse_brace_block(&segment_line);
+        match brace {
+            BraceParse::Inline { head, body, tail } if head.trim().is_empty() => {
+                if let Some(tail) = tail {
+                    return Err(format!("unexpected trailing text after block: {tail}"));
+                }
+                stages.push(PipelineStage::Block(InlineBlock {
+                    block: body,
+                    redirs: Redirections::default(),
+                }));
+                continue;
+            }
+            BraceParse::Open { head, .. } if head.trim().is_empty() => {
+                return Err("inline block missing '}' in pipeline".into());
+            }
+            _ => {}
+        }
         if segment_line.starts_with("foreach ") {
             let brace = parse_brace_block(&segment_line);
             let (head, brace_block, brace_open, brace_tail) = match brace {
@@ -1188,6 +1366,14 @@ fn build_pipeline_stages_from_token_segments(
         let (args, redirs) = parse_redirections(remaining_tokens)?;
         if args.is_empty() {
             return Err("empty command in pipeline".into());
+        }
+        if state.functions.contains_key(&args[0]) {
+            stages.push(PipelineStage::Function(FunctionCall {
+                name: args[0].clone(),
+                args: args[1..].to_vec(),
+                redirs,
+            }));
+            continue;
         }
         stages.push(PipelineStage::External(CommandSpec { args, redirs }));
     }
@@ -1509,50 +1695,6 @@ fn run_alias_builtin_expanded(
     Ok(Some(RunResult::Success(true)))
 }
 
-fn build_pipeline_commands(
-    commands: &[String],
-    state: &mut ShellState,
-) -> Result<Vec<CommandSpec>, String> {
-    let commands_len = commands.len();
-    let mut expanded_commands = Vec::new();
-
-    for cmd in commands {
-        let args = parse_args(cmd.trim())?;
-        let args = apply_alias(args, state)?;
-        let expanded = expand_tokens_with_meta(args, state)?;
-        let tokens: Vec<WordToken> = expanded
-            .into_iter()
-            .map(|token| WordToken {
-                value: token.value,
-                protected: token.protected,
-            })
-            .collect();
-        let raw_values: Vec<String> = tokens.iter().map(|t| t.value.clone()).collect();
-        let (assignments, remaining) = split_assignments(&raw_values);
-        let assignments_len = assignments.len();
-        for (name, value) in assignments {
-            state.set_var(&name, value);
-        }
-        if remaining.is_empty() {
-            if commands_len == 1 {
-                return Ok(Vec::new());
-            }
-            return Err("empty command in pipeline".into());
-        }
-        let remaining_tokens: Vec<WordToken> = tokens
-            .into_iter()
-            .skip(assignments_len)
-            .collect();
-        let (args, redirs) = parse_redirections(remaining_tokens)?;
-        if args.is_empty() {
-            return Err("empty command in pipeline".into());
-        }
-        expanded_commands.push(CommandSpec { args, redirs });
-    }
-
-    Ok(expanded_commands)
-}
-
 fn build_pipeline_stages_from_segments(
     segments: &[String],
     state: &mut ShellState,
@@ -1563,6 +1705,24 @@ fn build_pipeline_stages_from_segments(
         let trimmed = segment.trim();
         if trimmed.is_empty() {
             return Err("empty command in pipeline".into());
+        }
+
+        let brace = parse_brace_block(trimmed);
+        match brace {
+            BraceParse::Inline { head, body, tail } if head.trim().is_empty() => {
+                if let Some(tail) = tail {
+                    return Err(format!("unexpected trailing text after block: {tail}"));
+                }
+                stages.push(PipelineStage::Block(InlineBlock {
+                    block: body,
+                    redirs: Redirections::default(),
+                }));
+                continue;
+            }
+            BraceParse::Open { head, .. } if head.trim().is_empty() => {
+                return Err("inline block missing '}' in pipeline".into());
+            }
+            _ => {}
         }
 
         let tokens = parse_args(trimmed)?;
@@ -1624,6 +1784,14 @@ fn build_pipeline_stages_from_segments(
         let (args, redirs) = parse_redirections(remaining_tokens)?;
         if args.is_empty() {
             return Err("empty command in pipeline".into());
+        }
+        if state.functions.contains_key(&args[0]) {
+            stages.push(PipelineStage::Function(FunctionCall {
+                name: args[0].clone(),
+                args: args[1..].to_vec(),
+                redirs,
+            }));
+            continue;
         }
         stages.push(PipelineStage::External(CommandSpec { args, redirs }));
     }
@@ -1757,6 +1925,8 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
 
 enum PipelineStage {
     External(CommandSpec),
+    Function(FunctionCall),
+    Block(InlineBlock),
     Foreach {
         var: String,
         block: String,
@@ -1772,10 +1942,15 @@ fn run_pipeline_stages(
         return Ok(true);
     }
 
-    let foreach_needed = stages
-        .iter()
-        .any(|stage| matches!(stage, PipelineStage::Foreach { .. }));
-    let (locals_path, locals_guard) = if foreach_needed {
+    let worker_needed = stages.iter().any(|stage| {
+        matches!(
+            stage,
+            PipelineStage::Foreach { .. }
+                | PipelineStage::Function(_)
+                | PipelineStage::Block(_)
+        )
+    });
+    let (locals_path, locals_guard) = if worker_needed {
         let (path, guard) =
             write_locals_file(state).map_err(|err| format!("failed to write locals: {err}"))?;
         (Some(path), Some(guard))
@@ -1798,6 +1973,39 @@ fn run_pipeline_stages(
                     cmd.args(&spec.args[1..]);
                 }
                 (cmd, spec.redirs.clone(), spec.args[0].clone())
+            }
+            PipelineStage::Function(spec) => {
+                let locals = locals_path
+                    .as_ref()
+                    .ok_or_else(|| "missing locals path for function".to_string())?;
+                let exe = env::current_exe()
+                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("--function-worker")
+                    .arg("--locals")
+                    .arg(locals)
+                    .arg("--name")
+                    .arg(&spec.name)
+                    .arg("--args")
+                    .args(&spec.args);
+                (cmd, spec.redirs.clone(), spec.name.clone())
+            }
+            PipelineStage::Block(spec) => {
+                let locals = locals_path
+                    .as_ref()
+                    .ok_or_else(|| "missing locals path for block".to_string())?;
+                let (block_path, guard) = write_block_file(&spec.block)
+                    .map_err(|err| format!("failed to write pipeline block: {err}"))?;
+                block_guards.push(guard);
+                let exe = env::current_exe()
+                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("--block-worker")
+                    .arg("--block")
+                    .arg(block_path)
+                    .arg("--locals")
+                    .arg(locals);
+                (cmd, spec.redirs.clone(), "block".to_string())
             }
             PipelineStage::Foreach { var, block, inline } => {
                 let exe = env::current_exe()
@@ -2100,20 +2308,15 @@ pub(crate) fn execute_inline_block(
     block: &str,
     state: &mut ShellState,
 ) -> Result<FlowControl, String> {
-    let segments = split_on_semicolons(block);
-    for segment in segments {
-        if segment.trim().is_empty() {
-            continue;
-        }
-        match process_line_raw(&segment, state) {
-            FlowControl::Exit => {
-                return Err("exit not allowed in inline block".into());
-            }
-            FlowControl::Return(code) => return Ok(FlowControl::Return(code)),
-            FlowControl::None => {}
-        }
+    let trimmed = block.trim();
+    if trimmed.is_empty() {
+        return Ok(FlowControl::None);
     }
-    Ok(FlowControl::None)
+    match process_line_raw(trimmed, state) {
+        FlowControl::Exit => Err("exit not allowed in inline block".into()),
+        FlowControl::Return(code) => Ok(FlowControl::Return(code)),
+        FlowControl::None => Ok(FlowControl::None),
+    }
 }
 
 pub struct ScriptContext<'a> {
@@ -2385,11 +2588,9 @@ impl<'a> ScriptContext<'a> {
                 if let Some(block) = foreach.brace_block {
                     if should_execute {
                         let mut stages = Vec::new();
-                        let before_cmds =
-                            build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
-                        for cmd in before_cmds {
-                            stages.push(PipelineStage::External(cmd));
-                        }
+                        let mut before_stages =
+                            build_pipeline_stages_from_token_segments(&foreach.before, self.state)?;
+                        stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: foreach.var_name.clone(),
                             block,
@@ -2418,11 +2619,9 @@ impl<'a> ScriptContext<'a> {
                     }
                     if should_execute {
                         let mut stages = Vec::new();
-                        let before_cmds =
-                            build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
-                        for cmd in before_cmds {
-                            stages.push(PipelineStage::External(cmd));
-                        }
+                        let mut before_stages =
+                            build_pipeline_stages_from_token_segments(&foreach.before, self.state)?;
+                        stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: foreach.var_name.clone(),
                             block: block_lines.join("\n"),
@@ -2446,11 +2645,9 @@ impl<'a> ScriptContext<'a> {
 
                 if should_execute {
                     let mut stages = Vec::new();
-                    let before_cmds =
-                        build_pipeline_commands_from_token_segments(&foreach.before, self.state)?;
-                    for cmd in before_cmds {
-                        stages.push(PipelineStage::External(cmd));
-                    }
+                        let mut before_stages =
+                            build_pipeline_stages_from_token_segments(&foreach.before, self.state)?;
+                        stages.append(&mut before_stages);
                     let raw_lines = self.lines[block_start..block_end].to_vec();
                     let block_lines = unindent_block_lines(&raw_lines);
                     stages.push(PipelineStage::Foreach {
@@ -2481,10 +2678,8 @@ impl<'a> ScriptContext<'a> {
                 if let Some(block) = brace_block {
                     if should_execute {
                         let mut stages = Vec::new();
-                        let before_cmds = build_pipeline_commands(&before, self.state)?;
-                        for cmd in before_cmds {
-                            stages.push(PipelineStage::External(cmd));
-                        }
+                        let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                        stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: var_name.clone(),
                             block,
@@ -2507,10 +2702,8 @@ impl<'a> ScriptContext<'a> {
                     }
                     if should_execute {
                         let mut stages = Vec::new();
-                        let before_cmds = build_pipeline_commands(&before, self.state)?;
-                        for cmd in before_cmds {
-                            stages.push(PipelineStage::External(cmd));
-                        }
+                        let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                        stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: var_name.clone(),
                             block: block_lines.join("\n"),
@@ -2534,10 +2727,8 @@ impl<'a> ScriptContext<'a> {
 
                 if should_execute {
                     let mut stages = Vec::new();
-                    let before_cmds = build_pipeline_commands(&before, self.state)?;
-                    for cmd in before_cmds {
-                        stages.push(PipelineStage::External(cmd));
-                    }
+                    let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                    stages.append(&mut before_stages);
                     let raw_lines = self.lines[block_start..block_end].to_vec();
                     let block_lines = unindent_block_lines(&raw_lines);
                     stages.push(PipelineStage::Foreach {

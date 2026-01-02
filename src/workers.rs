@@ -1,9 +1,15 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::state::{create_temp_file, read_locals_file, write_locals_file, ShellState, TempFileGuard};
+use crate::state::{
+    create_temp_file, read_locals_file, write_locals_file, FunctionBody, FunctionDef, ShellState,
+    TempFileGuard,
+};
 use crate::{execute_inline_block, FlowControl, ScriptContext};
+
+const FUNCTION_MAX_DEPTH: usize = 64;
 
 pub struct ForeachWorkerArgs {
     pub var: String,
@@ -14,6 +20,17 @@ pub struct ForeachWorkerArgs {
 
 pub struct CaptureWorkerArgs {
     pub script_path: PathBuf,
+    pub locals_path: PathBuf,
+}
+
+pub struct FunctionWorkerArgs {
+    pub name: String,
+    pub args: Vec<String>,
+    pub locals_path: PathBuf,
+}
+
+pub struct BlockWorkerArgs {
+    pub block_path: PathBuf,
     pub locals_path: PathBuf,
 }
 
@@ -81,6 +98,35 @@ pub fn run_capture_worker(args: &[String]) -> Result<(), String> {
         FlowControl::None => {}
     }
     Ok(())
+}
+
+pub fn run_function_worker(args: &[String]) -> Result<i32, String> {
+    let opts = parse_function_worker_args(args)?;
+    let mut state = read_locals_file(&opts.locals_path)
+        .map_err(|err| format!("failed to load function locals: {err}"))?;
+    let func = state
+        .functions
+        .get(&opts.name)
+        .cloned()
+        .ok_or_else(|| format!("unknown function '{}'", opts.name))?;
+    let mut call_args = Vec::with_capacity(opts.args.len() + 1);
+    call_args.push(opts.name.clone());
+    call_args.extend(opts.args);
+    run_function_in_worker(&call_args, func, &mut state)
+}
+
+pub fn run_block_worker(args: &[String]) -> Result<i32, String> {
+    let opts = parse_block_worker_args(args)?;
+    let mut state = read_locals_file(&opts.locals_path)
+        .map_err(|err| format!("failed to load block locals: {err}"))?;
+    let block = read_block_file(&opts.block_path)
+        .map_err(|err| format!("failed to read block: {err}"))?;
+    match execute_inline_block(&block, &mut state) {
+        Ok(FlowControl::Return(_)) => Err("return not allowed in inline block".into()),
+        Ok(FlowControl::None) => Ok(state.last_status),
+        Ok(FlowControl::Exit) => Ok(state.last_status),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn parse_foreach_worker_args(args: &[String]) -> Result<ForeachWorkerArgs, String> {
@@ -152,6 +198,73 @@ pub fn parse_capture_worker_args(args: &[String]) -> Result<CaptureWorkerArgs, S
     })
 }
 
+pub fn parse_function_worker_args(args: &[String]) -> Result<FunctionWorkerArgs, String> {
+    let mut name = None;
+    let mut locals_path = None;
+    let mut func_args = Vec::new();
+    let mut idx = 0;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--name" => {
+                idx += 1;
+                name = args.get(idx).cloned();
+            }
+            "--locals" => {
+                idx += 1;
+                locals_path = args.get(idx).map(PathBuf::from);
+            }
+            "--args" => {
+                idx += 1;
+                if idx < args.len() {
+                    func_args = args[idx..].to_vec();
+                }
+                break;
+            }
+            other => {
+                return Err(format!("unknown function worker flag '{other}'"));
+            }
+        }
+        idx += 1;
+    }
+
+    Ok(FunctionWorkerArgs {
+        name: name.ok_or_else(|| "function worker missing --name".to_string())?,
+        args: func_args,
+        locals_path: locals_path
+            .ok_or_else(|| "function worker missing --locals".to_string())?,
+    })
+}
+
+pub fn parse_block_worker_args(args: &[String]) -> Result<BlockWorkerArgs, String> {
+    let mut block_path = None;
+    let mut locals_path = None;
+    let mut idx = 0;
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--block" => {
+                idx += 1;
+                block_path = args.get(idx).map(PathBuf::from);
+            }
+            "--locals" => {
+                idx += 1;
+                locals_path = args.get(idx).map(PathBuf::from);
+            }
+            other => {
+                return Err(format!("unknown block worker flag '{other}'"));
+            }
+        }
+        idx += 1;
+    }
+
+    Ok(BlockWorkerArgs {
+        block_path: block_path.ok_or_else(|| "block worker missing --block".to_string())?,
+        locals_path: locals_path
+            .ok_or_else(|| "block worker missing --locals".to_string())?,
+    })
+}
+
 pub fn read_block_file(path: &Path) -> io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut contents = String::new();
@@ -196,6 +309,40 @@ pub fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
 
     io::stderr().write_all(&output.stderr)?;
     trim_capture_output(output, state.options.subshells_trim_newline)
+}
+
+fn run_function_in_worker(
+    args: &[String],
+    func: FunctionDef,
+    state: &mut ShellState,
+) -> Result<i32, String> {
+    if state.locals_stack.len() >= FUNCTION_MAX_DEPTH {
+        return Err("function call depth exceeded".into());
+    }
+    state.positional_stack.push(state.positional.clone());
+    state.positional = args[1..].to_vec();
+    state.locals_stack.push(HashMap::new());
+    state.last_status = 0;
+
+    let result = match func.body {
+        FunctionBody::Inline(body) => execute_inline_block(&body, state),
+        FunctionBody::Block(lines) => {
+            let mut ctx = ScriptContext { lines, state };
+            ctx.execute_with_exit()
+        }
+    };
+
+    let flow = result?;
+    state.positional = state.positional_stack.pop().unwrap_or_default();
+    state.locals_stack.pop();
+
+    let code = match flow {
+        FlowControl::Exit => state.last_status,
+        FlowControl::Return(code) => code,
+        FlowControl::None => state.last_status,
+    };
+
+    Ok(code)
 }
 
 pub fn trim_capture_output(output: std::process::Output, trim_newline: bool) -> io::Result<String> {

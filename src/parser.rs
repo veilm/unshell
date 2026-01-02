@@ -5,6 +5,7 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut current = String::new();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
+    let mut brace_depth = 0;
     let mut in_double = false;
     let mut in_single = false;
     let mut prev_was_space = true;
@@ -89,7 +90,22 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 current.push(ch);
                 prev_was_space = false;
             }
-            ch if ch.is_whitespace() && !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 =>
+            '{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                brace_depth += 1;
+                current.push(ch);
+                prev_was_space = false;
+            }
+            '}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                current.push(ch);
+                prev_was_space = false;
+            }
+            ch if ch.is_whitespace()
+                && !in_double
+                && !in_single
+                && bracket_depth == 0
+                && paren_depth == 0
+                && brace_depth == 0 =>
             {
                 if !current.is_empty() {
                     args.push(current);
@@ -121,10 +137,6 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(args)
-}
-
-pub fn split_on_semicolons(line: &str) -> Vec<String> {
-    split_by_char(line, ';')
 }
 
 pub fn split_on_pipes(line: &str) -> Vec<String> {
@@ -176,6 +188,7 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
     let mut in_single = false;
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
+    let mut brace_depth = 0;
     let mut chars = line.chars().peekable();
     let mut prev_was_space = true;
 
@@ -250,11 +263,27 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
                 current.push(ch);
                 prev_was_space = false;
             }
+            '{'
+                if !in_double
+                    && !in_single
+                    && bracket_depth == 0
+                    && paren_depth == 0 =>
+            {
+                brace_depth += 1;
+                current.push(ch);
+                prev_was_space = false;
+            }
+            '}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                current.push(ch);
+                prev_was_space = false;
+            }
             ch if ch == delimiter
                 && !in_double
                 && !in_single
                 && bracket_depth == 0
-                && paren_depth == 0 =>
+                && paren_depth == 0
+                && brace_depth == 0 =>
             {
                 parts.push(current);
                 current = String::new();

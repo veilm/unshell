@@ -1,0 +1,5 @@
+set expansions.characters "@" on
+set expansions.handler ./util/expansion_handler_fail.py
+true || echo @oops
+false && echo @oops
+echo ok

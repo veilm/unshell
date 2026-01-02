@@ -1,0 +1,3 @@
+x=old
+{ echo new ; x=changed ; echo inner x=$x } | cat
+echo outer x=$x
