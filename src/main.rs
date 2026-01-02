@@ -1745,9 +1745,6 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         let status = child
             .wait()
             .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
-        if !status.success() {
-            report_status(&name, status);
-        }
         if idx + 1 == commands.len() {
             last_success = status.success();
             last_status = exit_status_code(&status);
@@ -1927,9 +1924,6 @@ fn run_pipeline_stages(
         let status = child
             .wait()
             .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
-        if !status.success() {
-            report_status(&name, status);
-        }
         if idx + 1 == stages.len() {
             last_success = status.success();
             last_status = exit_status_code(&status);
@@ -2941,16 +2935,6 @@ fn update_last_output(state: &mut ShellState, last_byte: Option<u8>) {
 
 fn capture_output_enabled(state: &ShellState) -> bool {
     state.interactive && !io::stdout().is_terminal()
-}
-
-fn report_status(cmd: &str, status: ExitStatus) {
-    if let Some(code) = status.code() {
-        if code != 0 {
-            eprintln!("unshell: '{}' exited with status {code}", cmd);
-        }
-    } else if !status.success() {
-        eprintln!("unshell: '{}' terminated by signal", cmd);
-    }
 }
 
 fn exit_status_code(status: &ExitStatus) -> i32 {
