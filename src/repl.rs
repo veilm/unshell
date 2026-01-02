@@ -172,6 +172,7 @@ fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcom
         .arg("--no-info")
         .arg("--no-separator")
         .arg("--reverse")
+        .arg("-1") // select only option if only 1 is given
         .arg("--prompt")
         .arg("> ")
         .arg("--exit-0")

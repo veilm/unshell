@@ -24,6 +24,53 @@ pub fn expand_tokens_with_meta(
     expand_tokens_with_meta_inner(tokens, state, false)
 }
 
+fn token_has_expansion_sigil(token: &str) -> bool {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut chars = token.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if in_double && ch == '\\' {
+            let _ = chars.next();
+            continue;
+        }
+
+        match ch {
+            '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+            }
+            '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+            }
+            '$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                return true;
+            }
+            '[' if !in_double && !in_single && paren_depth == 0 => {
+                if bracket_depth == 0 {
+                    if !matches!(chars.peek(), Some(next) if next.is_whitespace()) {
+                        return true;
+                    }
+                }
+                bracket_depth += 1;
+            }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+            }
+            '(' if paren_depth > 0 => {
+                paren_depth += 1;
+            }
+            ')' if paren_depth > 0 => {
+                paren_depth -= 1;
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
 fn expand_tokens_with_meta_inner(
     tokens: Vec<String>,
     state: &ShellState,
@@ -84,14 +131,14 @@ fn expand_tokens_with_meta_inner(
                     for replacement in replacements {
                         expanded.push(ExpandedToken {
                             value: replacement,
-                            protected: false,
+                            protected: !from_spread,
                             allow_split: false,
                         });
                     }
                 } else {
                     expanded.push(ExpandedToken {
                         value: value.clone(),
-                        protected: false,
+                        protected: !from_spread,
                         allow_split: false,
                     });
                 }
@@ -99,7 +146,8 @@ fn expand_tokens_with_meta_inner(
             continue;
         }
 
-        let protected = token.contains('"') || token.contains('\'');
+        let protected =
+            token.contains('"') || token.contains('\'') || (!from_spread && token_has_expansion_sigil(&token));
         let allow_split = from_spread || token_contains_operator(&token);
         let value = if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
             token[1..token.len() - 1].to_string()
@@ -119,7 +167,7 @@ fn expand_tokens_with_meta_inner(
             for replacement in replacements {
                 expanded.push(ExpandedToken {
                     value: replacement,
-                    protected: false,
+                    protected: !from_spread,
                     allow_split: false,
                 });
             }

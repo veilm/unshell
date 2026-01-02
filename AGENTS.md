@@ -6,6 +6,7 @@
 3. **Implement**: Keep the core shell minimal; prefer Rust for shell internals and standalone utilities for extra helpers. Use ASCII unless the file already contains non-ASCII.
    - Keep tokenization and execution centralized so new syntax reuses the same parsing path; avoid feature-specific parsing that can change unrelated operator behavior.
 4. **Tests first/always**: Add or update integration fixtures in `tests/fixtures/` that demonstrate the behavior before (or alongside) implementing it. Each `.ush` script must have `.stdout` / `.stderr` snapshot files. Run `cargo test` to validate.
+   - If stderr should be empty, omit the `.stderr` file; the test harness treats missing stderr snapshots as empty.
 5. **Document**: After coding, edit `docs/spec.md` and/or `README.md` to reflect what’s now implemented vs. what’s next. Every new ambiguity should be captured under in the open-questions list.
 6. **Communicate failures**: If tests or commands fail, report the failure (do not hide it).
 7. **Final review**: Summarize code changes, mention updated tests/docs, and remind of outstanding failures or TODOs in the final response.
