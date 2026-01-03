@@ -3152,18 +3152,27 @@ impl<'a> ScriptContext<'a> {
         if args.is_empty() {
             return Ok(false);
         }
-        let expanded = expand_tokens(args, &self.state)?;
-
-        match Command::new(&expanded[0]).args(&expanded[1..]).status() {
-            Ok(status) => {
-                self.state.last_status = exit_status_code(&status);
-                Ok(status.success())
-            }
-            Err(err) => Err(format!(
-                "failed to execute condition '{}': {err}",
-                expanded[0]
-            )),
+        let args = apply_alias(args, &self.state)?;
+        let expanded = expand_tokens_with_meta(args, &self.state)?;
+        let words: Vec<WordToken> = expanded
+            .into_iter()
+            .map(|token| WordToken {
+                value: token.value,
+                protected: token.protected,
+            })
+            .collect();
+        let (cmd_args, redirs) = parse_redirections(words)?;
+        if cmd_args.is_empty() {
+            return Ok(false);
         }
+        let success = run_pipeline(
+            vec![CommandSpec {
+                args: cmd_args,
+                redirs,
+            }],
+            &mut self.state,
+        )?;
+        Ok(success)
     }
 
     fn find_block_end(&self, mut idx: usize, indent_level: usize) -> usize {

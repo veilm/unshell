@@ -1,0 +1,2 @@
+if echo ok out>null { echo yes }
+elif echo nope out>null { echo no }

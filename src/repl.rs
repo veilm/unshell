@@ -63,6 +63,7 @@ impl CompletionTrait for FuzzyCompleter {
                     .find(|c| c.display == sel)
                     .cloned();
                 if let Some(mut choice) = selected {
+                    choice.replacement = quote_completion(&choice.replacement);
                     choice.replacement.push(' ');
                     Ok((start, vec![choice]))
                 } else {
@@ -89,6 +90,22 @@ impl CompletionTrait for FuzzyCompleter {
     ) {
         line.replace(start..line.pos(), elected, cl);
     }
+}
+
+fn quote_completion(value: &str) -> String {
+    if !value.chars().any(|ch| ch.is_whitespace()) {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        if ch == '"' || ch == '\\' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('"');
+    out
 }
 
 fn word_start<'a>(line: &'a str, pos: usize) -> (usize, &'a str) {
