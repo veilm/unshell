@@ -2446,6 +2446,21 @@ impl<'a> ScriptContext<'a> {
         Ok(FlowControl::None)
     }
 
+    fn expand_aliases_with_context(
+        &self,
+        line: &str,
+        line_no: usize,
+        raw_line: &str,
+    ) -> Result<String, String> {
+        expand_aliases_in_line(line, self.state)
+            .map_err(|err| self.format_line_error(&err, line_no, raw_line))
+    }
+
+    fn format_line_error(&self, err: &str, line_no: usize, line: &str) -> String {
+        let line = line.trim_end();
+        format!("{err} on line {line_no}: {line}")
+    }
+
     fn execute_block(
         &mut self,
         mut idx: usize,
@@ -2474,7 +2489,7 @@ impl<'a> ScriptContext<'a> {
                 return Err("unexpected '}'".into());
             }
 
-            let expanded = expand_aliases_in_line(&trimmed, self.state)?;
+            let expanded = self.expand_aliases_with_context(&trimmed, idx + 1, &line)?;
             let use_expanded = expanded.starts_with("if ")
                 || expanded.starts_with("for ")
                 || expanded.starts_with("def ")
@@ -2493,7 +2508,8 @@ impl<'a> ScriptContext<'a> {
                     };
                 let brace_inline_tail = brace_inline_tail;
                 let run_child = if should_execute {
-                    self.evaluate_condition(condition.trim())?
+                    self.evaluate_condition(condition.trim())
+                        .map_err(|err| self.format_line_error(&err, idx + 1, &line))?
                 } else {
                     false
                 };
@@ -2601,7 +2617,8 @@ impl<'a> ScriptContext<'a> {
                     BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
                     BraceParse::None { head } => (head, None, false, None),
                 };
-                let args = parse_args(&head)?;
+                let args = parse_args(&head)
+                    .map_err(|err| self.format_line_error(&err, idx + 1, &line))?;
                 if args.len() != 1 {
                     return Err(format!("def expects a single name on line {}", idx + 1));
                 }
@@ -2761,7 +2778,8 @@ impl<'a> ScriptContext<'a> {
             }
 
             let foreach_tokens = if trimmed.contains("...") {
-                let tokens = expand_line_tokens_spread_only(&trimmed, self.state)?;
+                let tokens = expand_line_tokens_spread_only(&trimmed, self.state)
+                    .map_err(|err| self.format_line_error(&err, idx + 1, &line))?;
                 parse_foreach_tokens(&tokens)
             } else {
                 None
@@ -2802,7 +2820,8 @@ impl<'a> ScriptContext<'a> {
                     let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, foreach.brace_tail)?;
                     if let Some(tail) = tail_line.as_deref() {
-                        let tail_tokens = expand_line_tokens_spread_only(tail, self.state)?;
+                        let tail_tokens = expand_line_tokens_spread_only(tail, self.state)
+                            .map_err(|err| self.format_line_error(&err, idx + 1, tail))?;
                         let mut tail_segments = split_tokens_on_pipes(&tail_tokens)?;
                         let mut tail_strings: Vec<Vec<String>> = tail_segments
                             .drain(..)
@@ -2943,7 +2962,8 @@ impl<'a> ScriptContext<'a> {
                     BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
                     BraceParse::None { head } => (head, None, false, None),
                 };
-                let args = parse_args(&body)?;
+                let args = parse_args(&body)
+                    .map_err(|err| self.format_line_error(&err, idx + 1, &line))?;
                 if args.len() < 3 || args[1] != "in" {
                     return Err(format!("invalid for syntax on line {}", idx + 1));
                 }
@@ -3079,7 +3099,7 @@ impl<'a> ScriptContext<'a> {
                 return Err(format!("unexpected indent on line {}", idx + 1));
             }
 
-            let trimmed = expand_aliases_in_line(&trimmed, self.state)?;
+            let trimmed = self.expand_aliases_with_context(&trimmed, idx + 1, &line)?;
 
             if let Some(rest) = trimmed.strip_prefix("elif ") {
                 handled = true;
@@ -3122,7 +3142,7 @@ impl<'a> ScriptContext<'a> {
         should_execute: bool,
     ) -> Result<(FlowControl, usize, bool), String> {
         if let Some(tail) = tail_line {
-            let trimmed = expand_aliases_in_line(tail.trim(), self.state)?;
+            let trimmed = self.expand_aliases_with_context(tail.trim(), idx + 1, &tail)?;
             if trimmed.starts_with("elif ") {
                 let rest = trimmed.strip_prefix("elif ").unwrap_or("").trim();
                 return self.handle_else_line(rest, idx, indent_level, should_execute, true);
@@ -3154,7 +3174,9 @@ impl<'a> ScriptContext<'a> {
 
         let run_child = if is_elif {
             if should_execute {
-                self.evaluate_condition(condition.trim())?
+                self.evaluate_condition(condition.trim()).map_err(|err| {
+                    self.format_line_error(&err, block_start, &format!("if {condition}"))
+                })?
             } else {
                 false
             }
@@ -3295,6 +3317,7 @@ impl<'a> ScriptContext<'a> {
         idx
     }
 }
+
 
 #[cfg(not(feature = "repl"))]
 fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
