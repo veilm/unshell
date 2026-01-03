@@ -17,9 +17,8 @@ use rustyline::{
 
 use crate::state::{ReplBinding, ShellState};
 use crate::term::cursor_column;
-use crate::process_line;
+use crate::{build_prompt, process_line, DEFAULT_PROMPT};
 
-const PROMPT: &str = "unshell> ";
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_STRING: &str = "\x1b[1;35m";
 const COLOR_KEYWORD: &str = "\x1b[1;31m";
@@ -509,7 +508,13 @@ pub fn run_repl(state: &mut ShellState) {
             }
         }
 
-        match rl.readline(PROMPT) {
+        let prompt = build_prompt(state);
+        let prompt = if prompt.is_empty() {
+            DEFAULT_PROMPT.to_string()
+        } else {
+            prompt
+        };
+        match rl.readline(&prompt) {
             Ok(line) => {
                 if !line.trim().is_empty() {
                     let _ = rl.add_history_entry(line.as_str());

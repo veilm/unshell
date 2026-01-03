@@ -40,6 +40,7 @@ pub struct ReplBinding {
 pub struct ReplOptions {
     pub vi_mode: bool,
     pub completion_command: Vec<String>,
+    pub prompt_command: Option<String>,
     pub bindings: Vec<ReplBinding>,
     pub generation: u64,
 }
@@ -75,6 +76,7 @@ impl ShellState {
             repl: ReplOptions {
                 vi_mode: true,
                 completion_command: vec!["fzf".to_string()],
+                prompt_command: None,
                 bindings: Vec::new(),
                 generation: 0,
             },

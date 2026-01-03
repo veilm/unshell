@@ -29,6 +29,7 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 - default: `fzf` if present, Rustyline filename completion otherwise
 - disable completion command: `set repl.completion.command off`
 - custom completion command: `set repl.completion.command fzf` or `set repl.completion.command skim`
+- prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
 The REPL passes file candidates to the completion command on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). When the command is missing or disabled, Rustyline's filename completion uses prefix matching and auto-completes when there is a single candidate.
 
@@ -45,6 +46,9 @@ set repl.mode emacs
 
 set repl.completion.command fzf
 set repl.completion.command off
+
+set repl.prompt.command 'echo "unshell> "'
+set repl.prompt.command off
 
 set repl.bind ctrl-e end-of-line
 set repl.bind alt-f forward-word

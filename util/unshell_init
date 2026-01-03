@@ -59,3 +59,22 @@ if [ $USH_MODE = repl ]
 	else
 		alias py python
 
+	function draw_prompt
+		term=">"
+		term="✣"
+		term="✤"
+		term="❄"
+		term="✿"
+		term="✻"
+		term="❃"
+		term="✾"
+		term="❦"
+		term="✶"
+		term="❈"
+
+		if [ $PWD = $HOME ]
+			echo "$term ~ "
+		else
+			printf "$term %s \n" [echo $PWD | sed "s|^.*/||"]
+
+	set repl.prompt.command draw_prompt

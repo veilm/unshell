@@ -25,11 +25,13 @@ use crate::parser::{
 };
 use crate::state::{lookup_var, write_locals_file, FunctionBody, FunctionDef, ShellState};
 use crate::workers::{
-    run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file,
+    run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker,
+    trim_trailing_newline, write_block_file,
 };
 #[cfg(not(feature = "repl"))]
 use crate::term::cursor_column;
 
+pub(crate) const DEFAULT_PROMPT: &str = "unshell> ";
 const FUNCTION_MAX_DEPTH: usize = 64;
 
 fn main() {
@@ -272,6 +274,53 @@ fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> io::Result<(
     }
 
     Ok(())
+}
+
+pub(crate) fn build_prompt(state: &mut ShellState) -> String {
+    let command = state.repl.prompt_command.clone();
+    match command.as_deref() {
+        None => DEFAULT_PROMPT.to_string(),
+        Some(command) => match prompt_command_output(command, state) {
+            Ok(prompt) => prompt,
+            Err(err) => {
+                eprintln!("unshell: prompt: {err}");
+                DEFAULT_PROMPT.to_string()
+            }
+        },
+    }
+}
+
+fn prompt_command_output(command: &str, state: &mut ShellState) -> Result<String, String> {
+    let (mut read, write) = create_pipe()?;
+    let saved_stdout = dup_fd(libc::STDOUT_FILENO)?;
+    dup2_fd(write.as_raw_fd(), libc::STDOUT_FILENO)?;
+    drop(write);
+
+    let saved_last_status = state.last_status;
+    let saved_output_newline = state.last_output_newline;
+    let saved_cursor_check = state.needs_cursor_check;
+
+    let flow = process_line_raw(command, state);
+
+    let _ = unsafe { libc::dup2(saved_stdout, libc::STDOUT_FILENO) };
+    let _ = unsafe { libc::close(saved_stdout) };
+
+    let mut output = String::new();
+    read.read_to_string(&mut output)
+        .map_err(|err| format!("failed to read prompt output: {err}"))?;
+
+    state.last_status = saved_last_status;
+    state.last_output_newline = saved_output_newline;
+    state.needs_cursor_check = saved_cursor_check;
+
+    match flow {
+        FlowControl::Exit => Err("exit not allowed in prompt".into()),
+        FlowControl::Return(_) => Err("return not allowed in prompt".into()),
+        FlowControl::None => {
+            trim_trailing_newline(&mut output);
+            Ok(output)
+        }
+    }
 }
 
 
@@ -1581,6 +1630,19 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         state.repl.completion_command.clear();
                     } else {
                         state.repl.completion_command = args[2..].to_vec();
+                    }
+                    state.repl.generation += 1;
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.prompt.command" => {
+                    if args.len() < 3 {
+                        return Err("set: repl.prompt.command expects a value".into());
+                    }
+                    if args.len() == 3 && args[2] == "off" {
+                        state.repl.prompt_command = None;
+                    } else {
+                        state.repl.prompt_command = Some(args[2..].join(" "));
                     }
                     state.repl.generation += 1;
                     state.last_status = 0;
@@ -3236,7 +3298,7 @@ impl<'a> ScriptContext<'a> {
 
 #[cfg(not(feature = "repl"))]
 fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {
-    stdout.write_all(b"unshell> ")?;
+    stdout.write_all(DEFAULT_PROMPT.as_bytes())?;
     stdout.flush()
 }
 
