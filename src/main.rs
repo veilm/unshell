@@ -1393,6 +1393,7 @@ fn is_builtin(name: &str) -> bool {
             | "return"
             | "exit"
             | "builtin"
+            | "source"
             | "eval"
     )
 }
@@ -1623,6 +1624,23 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 FlowControl::None => {}
             }
             Ok(Some(RunResult::Success(true)))
+        }
+        "source" => {
+            if args.len() < 2 {
+                return Err("source: expected a path".into());
+            }
+            let path = &args[1];
+            let saved_positional = state.positional.clone();
+            state.positional = args[2..].to_vec();
+            let result = source_file(Path::new(path), state);
+            state.positional = saved_positional;
+            match result {
+                Ok(()) => {
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                Err(err) => Err(format!("source: failed to read '{path}': {err}")),
+            }
         }
         "builtin" => {
             if args.len() < 2 {

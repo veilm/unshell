@@ -1,0 +1,3 @@
+x=old
+source tests/fixtures/source_child.ush arg1
+echo outer=$x

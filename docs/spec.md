@@ -104,6 +104,13 @@ $cmd $payload
 ```
 **Current implementation:** `eval` runs in the parent shell (not a subshell) and can mutate shell state.
 
+### `source` Command
+`source` executes a script in the current shell process and can mutate variables, aliases, and the working directory. It accepts an optional list of positional args that are visible inside the sourced script.
+```bash
+source ./env.ush prod
+```
+**Current implementation:** `source PATH [ARGS...]` runs in the parent shell and restores the caller’s positional args afterward.
+
 ### Grouping with Parentheses
 Parentheses still group pipelines without invoking capture semantics, letting users control precedence or isolate redirections without new processes unless the OS requires them.
 ```bash
@@ -187,7 +194,7 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
+The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"
 unalias ll
