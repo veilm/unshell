@@ -10,11 +10,23 @@ OLDPWD=$PWD
 function cd
 	if [ $1 = - ]
 		builtin cd $OLDPWD || return
+	elif [ -z $1 ]
+		builtin cd $HOME || return
 	else
 		builtin cd $1 || return
 
 	OLDPWD=$PWD
 	PWD=[pwd]
+
+function or
+	if [ $1 ] { echo $1	}
+	else { echo $2 }
+
+function panic
+	msg=[or $1 ERR]
+	which notify-send out>null && notify-send $msg
+	echo $msg out>err
+	exit 1
 
 # default handler for ~, *, {}
 handler=/usr/local/bin/ush-expansion-handler
@@ -29,11 +41,21 @@ if [ $USH_MODE = repl ]
 	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
 
 	alias ls "env ls --color=auto"
-	alias ll "ls -l"
-	alias la "ls -a"
+	alias ll "ls -lh"
+	alias la "ls -A"
 
 	function g
 		cd $1
 		ls
 	
 	alias b "g .."
+	alias mkd mkdir
+
+	alias claude "claude --dangerously-skip-permissions"
+	alias codex "codex --dangerously-bypass-approvals-and-sandbox"
+
+	if which python3 o+e>n
+		alias py python3
+	else
+		alias py python
+
