@@ -1,0 +1,2 @@
+alias cat2 cat
+echo foo | cat2

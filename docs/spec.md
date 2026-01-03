@@ -12,6 +12,7 @@ Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` s
 Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
 Non-zero exit codes only update `$?` and do not emit warnings by default.
 Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
+Missing commands in a pipeline report an error but do not abort the rest of the pipeline.
 ```bash
 ls /var/log | grep error | tail -n 20
 echo first ; echo second

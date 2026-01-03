@@ -496,24 +496,55 @@ struct InlineBlock {
 
 fn raw_line_tokens(line: &str, state: &ShellState) -> Result<Vec<OpToken>, String> {
     let args = parse_args(line)?;
-    let args = apply_alias(args, state)?;
     let mut tokens = Vec::new();
+    push_tokens_as_ops(args, &mut tokens)?;
+    expand_aliases_in_tokens(tokens, state)
+}
 
-    for token in args {
+fn push_tokens_as_ops(tokens: Vec<String>, out: &mut Vec<OpToken>) -> Result<(), String> {
+    for token in tokens {
         if let Some(op) = token_to_operator(&token) {
-            tokens.push(OpToken::Op(op));
+            out.push(OpToken::Op(op));
             continue;
         }
         if contains_top_level_operator(&token) {
             return Err("operators must be separated by whitespace".into());
         }
-        tokens.push(OpToken::Word(WordToken {
+        out.push(OpToken::Word(WordToken {
             value: token,
             protected: false,
         }));
     }
+    Ok(())
+}
 
-    Ok(tokens)
+fn expand_aliases_in_tokens(
+    tokens: Vec<OpToken>,
+    state: &ShellState,
+) -> Result<Vec<OpToken>, String> {
+    let mut out = Vec::new();
+    let mut current = Vec::new();
+
+    for token in tokens {
+        match token {
+            OpToken::Op(op) => {
+                if !current.is_empty() {
+                    let expanded = apply_alias(current, state)?;
+                    push_tokens_as_ops(expanded, &mut out)?;
+                    current = Vec::new();
+                }
+                out.push(OpToken::Op(op));
+            }
+            OpToken::Word(word) => current.push(word.value),
+        }
+    }
+
+    if !current.is_empty() {
+        let expanded = apply_alias(current, state)?;
+        push_tokens_as_ops(expanded, &mut out)?;
+    }
+
+    Ok(out)
 }
 
 fn is_inline_block_token(token: &str) -> bool {
@@ -1904,6 +1935,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
     let capture_output = capture_output_enabled(state);
     let mut capture_read: Option<File> = None;
 
+    let mut child_count = 0usize;
     for (idx, spec) in commands.iter().enumerate() {
         let is_last = idx + 1 == commands.len();
         let mut cmd = Command::new(&spec.args[0]);
@@ -1982,16 +2014,24 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
             }
         }
 
-        let child = cmd
-            .spawn()
-            .map_err(|err| format!("failed to execute '{}': {err}", spec.args[0]))?;
+        let child = match cmd.spawn() {
+            Ok(child) => Some(child),
+            Err(err) => {
+                eprintln!("unshell: failed to execute '{}': {err}", spec.args[0]);
+                prev_read = None;
+                None
+            }
+        };
 
         drop(stdout_write);
         if let Some(read) = next_read {
             prev_read = Some(read);
         }
 
-        children.push((spec.args[0].clone(), child));
+        if let Some(child) = child {
+            child_count += 1;
+            children.push((spec.args[0].clone(), child));
+        }
     }
 
     if capture_output {
@@ -2007,7 +2047,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
     }
 
     let mut last_success = true;
-    let mut last_status = 0;
+    let mut last_status = if child_count == 0 { 127 } else { 0 };
     for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
@@ -2201,16 +2241,23 @@ fn run_pipeline_stages(
             }
         }
 
-        let child = cmd
-            .spawn()
-            .map_err(|err| format!("failed to execute pipeline stage: {err}"))?;
+        let child = match cmd.spawn() {
+            Ok(child) => Some(child),
+            Err(err) => {
+                eprintln!("unshell: failed to execute '{}': {err}", name);
+                prev_read = None;
+                None
+            }
+        };
 
         drop(stdout_write);
         if let Some(read) = next_read {
             prev_read = Some(read);
         }
 
-        children.push((name, child));
+        if let Some(child) = child {
+            children.push((name, child));
+        }
     }
 
     if capture_output {
@@ -2226,7 +2273,7 @@ fn run_pipeline_stages(
     }
 
     let mut last_success = true;
-    let mut last_status = 0;
+    let mut last_status = if children.is_empty() { 127 } else { 0 };
     for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
