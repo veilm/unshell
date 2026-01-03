@@ -1700,12 +1700,31 @@ fn run_alias_builtin_expanded(
         global = true;
         arg_idx += 1;
     }
-    if args.len() <= arg_idx + 1 {
-        return Err("alias: missing value".into());
+    if args.len() <= arg_idx {
+        return Err("alias: missing name".into());
     }
     let alias_name = &args[arg_idx];
     if !is_valid_alias_name(alias_name) {
         return Err(format!("alias: invalid name '{alias_name}'"));
+    }
+    if args.len() == arg_idx + 1 {
+        let alias = match state.aliases.get(alias_name) {
+            Some(alias) => alias,
+            None => return Err(format!("alias: no such alias '{alias_name}'")),
+        };
+        if global && !alias.global {
+            return Err(format!("alias: no such alias '{alias_name}'"));
+        }
+        if alias.global {
+            println!("alias -g {alias_name} {}", alias.value);
+        } else {
+            println!("alias {alias_name} {}", alias.value);
+        }
+        state.last_status = 0;
+        return Ok(Some(RunResult::Success(true)));
+    }
+    if args.len() <= arg_idx + 1 {
+        return Err("alias: missing value".into());
     }
     let value = args[arg_idx + 1..].join(" ");
     state.set_alias(alias_name, value, global);

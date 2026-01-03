@@ -223,7 +223,7 @@ alias -g today "[date +%F]"
 greet      # expands to: echo <value-of-$name-at-definition-time>
 echo today # expands to: echo [date +%F]
 ```
-**Current implementation:** alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand; alias expansion repeats while `aliases.recursive` is true; quoted tokens never trigger global alias replacement; alias expansion happens before control keywords are parsed.
+**Current implementation:** alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand; alias expansion repeats while `aliases.recursive` is true; quoted tokens never trigger global alias replacement; alias expansion happens before control keywords are parsed. `alias NAME` with no value prints the current alias (or errors if it does not exist).
 
 ### Shell Settings
 Settings are toggled with `set KEY VALUE` and apply to the running shell. The initial configuration is intentionally small.
