@@ -62,8 +62,11 @@ impl CompletionTrait for FuzzyCompleter {
                     .find(|c| c.display == sel)
                     .cloned();
                 if let Some(mut choice) = selected {
+                    let is_dir = choice.replacement.ends_with('/');
                     choice.replacement = quote_completion(&choice.replacement);
-                    choice.replacement.push(' ');
+                    if !is_dir {
+                        choice.replacement.push(' ');
+                    }
                     Ok((start, vec![choice]))
                 } else {
                     Ok((start, candidates))
