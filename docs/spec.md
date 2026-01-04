@@ -77,7 +77,15 @@ ls ...$files
 ```
 
 ### Command Substitution with Square Brackets
-Tokens that start with `[` and contain more than one character run as captures: `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument. A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`. Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[` and `[ ]` stays literal. Unquoted tokens can concatenate captures with surrounding text (e.g., `foo-[echo bar]`), and captures may nest (e.g., `[echo [pwd]]`). `$()` substitutions are also grouped as a single token even when they include spaces (e.g., `$(echo a b)`), and their output is inserted as one argument unless spread with `...`. To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal. Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line. **Current implementation:** captures run in a subshell using the same parser/executor as scripts (aliases, builtins, control flow, and pipelines). Changes inside the capture do not mutate the parent shell.
+Tokens that start with `[` and contain more than one character run as captures:
+- `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument.
+- A lone `[` continues to execute `/usr/bin/[` just like any other binary in `$PATH`.
+- Capture recognition only triggers when `[` is immediately followed by a non-whitespace character, so `[ test -f foo ]` continues to invoke `/usr/bin/[` and `[ ]` stays literal.
+- Unquoted tokens can concatenate captures with surrounding text (e.g., `foo-[echo bar]`), and captures may nest (e.g., `[echo [pwd]]`).
+- `$()` substitutions are also grouped as a single token even when they include spaces (e.g., `$(echo a b)`), and their output is inserted as one argument unless spread with `...`.
+- To avoid conflicts in strings (e.g., `echo "[module 7]"`), capture recognition only occurs for unquoted tokens; inside quotes the brackets are literal.
+- Classic `$()` is still accepted everywhere (including inside strings), and `$[]` is treated the same as `[]` for callers that prefer explicit sigils mid-line.
+- **Current implementation:** captures run in a subshell using the same parser/executor as scripts (aliases, builtins, control flow, and pipelines). Changes inside the capture do not mutate the parent shell. Capture stderr streams to the terminal, and interactive captures keep job-control handoff so TUIs can access the tty.
 ```bash
 cp [which python3] ./bin/python-system
 hash="sha256:[sha256sum Cargo.lock]"

@@ -201,6 +201,7 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
         file.write_all(value.as_bytes())?;
     }
     write_i32(&mut file, state.last_status)?;
+    write_bool(&mut file, state.interactive)?;
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -323,6 +324,7 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         state.positional.push(value);
     }
     state.last_status = read_i32(&mut file)?;
+    state.interactive = read_bool(&mut file)?;
     Ok(state)
 }
 

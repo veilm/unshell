@@ -1,0 +1,11 @@
+echo "value=$[sh -c 'printf out; printf err 1>&2']" err>n
+
+# This wouldn't work in the way it intends:
+# echo "value=$[sh -c 'printf out; printf err 1>&2']" err> /tmp/0
+# Because it's trying to redirect echo's stderr. echo just prints echo "string" so it's always to stdout by default
+# the inner sh doesn't contribute to echo's stderr, it just writes stderr inside its subshell, and that then goes to the terminal
+# this is required to support things like fzf. but also it's fine and doesn't really limit any functionality
+# if you needed its stderr in /tmp/0 you'd juts do
+# echo "value=$[sh -c 'printf out; printf err 1>&2' err> /tmp/0]"
+# simple as
+echo "value2=$[sh -c 'printf out2; printf err 1>&2' err>n]"

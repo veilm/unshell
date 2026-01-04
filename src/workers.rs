@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::state::{
     create_temp_file, read_locals_file, write_locals_file, FunctionBody, FunctionDef, ShellState,
@@ -311,16 +311,22 @@ pub fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
     let (script_path, _script_guard) =
         write_block_file(inner).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     let exe = std::env::current_exe()?;
-    let output = Command::new(exe)
+    let mut child = Command::new(exe)
         .arg("--capture-worker")
         .arg("--script")
         .arg(script_path)
         .arg("--locals")
         .arg(locals_path)
-        .output()?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
 
-    io::stderr().write_all(&output.stderr)?;
-    trim_capture_output(output, state.options.subshells_trim_newline)
+    let mut stdout = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_end(&mut stdout)?;
+    }
+    let _status = child.wait()?;
+    trim_capture_output(stdout, state.options.subshells_trim_newline)
 }
 
 fn run_function_in_worker(
@@ -357,8 +363,8 @@ fn run_function_in_worker(
     Ok(code)
 }
 
-pub fn trim_capture_output(output: std::process::Output, trim_newline: bool) -> io::Result<String> {
-    let mut text = String::from_utf8(output.stdout)
+pub fn trim_capture_output(output: Vec<u8>, trim_newline: bool) -> io::Result<String> {
+    let mut text = String::from_utf8(output)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "capture output not utf-8"))?;
 
     if trim_newline && text.ends_with('\n') {
