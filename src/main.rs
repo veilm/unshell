@@ -2325,6 +2325,11 @@ impl ForegroundGuard {
         if shell_pgrp < 0 {
             return None;
         }
+        let self_pgrp = unsafe { libc::getpgrp() };
+        if self_pgrp != shell_pgrp {
+            return None;
+        }
+        let _sig_guard = SignalGuard::ignore(libc::SIGTTOU)?;
         if unsafe { libc::tcsetpgrp(tty_fd, pgrp) } != 0 {
             return None;
         }
@@ -2337,7 +2342,29 @@ impl ForegroundGuard {
 
 impl Drop for ForegroundGuard {
     fn drop(&mut self) {
+        let _sig_guard = SignalGuard::ignore(libc::SIGTTOU);
         let _ = unsafe { libc::tcsetpgrp(self.tty_fd, self.shell_pgrp) };
+    }
+}
+
+struct SignalGuard {
+    signal: i32,
+    previous: libc::sighandler_t,
+}
+
+impl SignalGuard {
+    fn ignore(signal: i32) -> Option<Self> {
+        let previous = unsafe { libc::signal(signal, libc::SIG_IGN) };
+        if previous == libc::SIG_ERR {
+            return None;
+        }
+        Some(Self { signal, previous })
+    }
+}
+
+impl Drop for SignalGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::signal(self.signal, self.previous) };
     }
 }
 
