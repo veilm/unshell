@@ -1,0 +1,2 @@
+echo before
+exit 5

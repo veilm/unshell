@@ -83,8 +83,14 @@ fn main() {
         let mut state = ShellState::new();
         init_shell_state(&mut state, "script");
         state.positional = script_args;
-        if let Err(err) = load_startup(&mut state, &startup) {
-            eprintln!("unshell: failed to load startup: {err}");
+        match load_startup(&mut state, &startup) {
+            Ok(FlowControl::None) => {}
+            Ok(FlowControl::Exit) => std::process::exit(state.last_status),
+            Ok(FlowControl::Return(_)) => {
+                eprintln!("unshell: return not allowed in startup");
+                std::process::exit(1);
+            }
+            Err(err) => eprintln!("unshell: failed to load startup: {err}"),
         }
         if let Err(err) = run_script_with_state(&script, state) {
             eprintln!("unshell: failed to run script '{}': {err}", script);
@@ -100,8 +106,13 @@ fn main() {
 fn run_repl(startup: &StartupConfig) {
     let mut state = ShellState::new();
     init_shell_state(&mut state, "repl");
-    if let Err(err) = load_startup(&mut state, startup) {
-        eprintln!("unshell: failed to load startup: {err}");
+    match load_startup(&mut state, startup) {
+        Ok(FlowControl::None) => {}
+        Ok(FlowControl::Exit) => return,
+        Ok(FlowControl::Return(_)) => {
+            eprintln!("unshell: return not allowed in startup");
+        }
+        Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
     repl::run_repl(&mut state);
 }
@@ -113,8 +124,13 @@ fn run_repl(startup: &StartupConfig) {
     let mut state = ShellState::new();
 
     init_shell_state(&mut state, "repl");
-    if let Err(err) = load_startup(&mut state, startup) {
-        eprintln!("unshell: failed to load startup: {err}");
+    match load_startup(&mut state, startup) {
+        Ok(FlowControl::None) => {}
+        Ok(FlowControl::Exit) => return,
+        Ok(FlowControl::Return(_)) => {
+            eprintln!("unshell: return not allowed in startup");
+        }
+        Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
     println!("unshell: compiled without rustyline repl; using minimal input (no line editing or completion)");
 
@@ -230,28 +246,42 @@ fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
         lines,
         state: &mut state,
     };
-    ctx.execute()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+    match ctx
+        .execute_with_exit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+    {
+        FlowControl::Exit => {
+            std::process::exit(state.last_status);
+        }
+        FlowControl::Return(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "return not allowed outside functions",
+            ));
+        }
+        FlowControl::None => {}
+    }
 
     Ok(())
 }
 
-fn source_file(path: &Path, state: &mut ShellState) -> io::Result<()> {
-    let file = File::open(path)?;
+fn source_file(path: &Path, state: &mut ShellState) -> Result<FlowControl, String> {
+    let file = File::open(path).map_err(|err| err.to_string())?;
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+    let lines: Vec<String> = reader
+        .lines()
+        .collect::<Result<_, _>>()
+        .map_err(|err| err.to_string())?;
     let mut ctx = ScriptContext {
         lines,
         state,
     };
-    ctx.execute()
-        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    Ok(())
+    ctx.execute_with_exit()
 }
 
-fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> io::Result<()> {
+fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> Result<FlowControl, String> {
     if startup.no_rc {
-        return Ok(());
+        return Ok(FlowControl::None);
     }
     if let Some(path) = startup.rc_path.as_deref() {
         return source_file(Path::new(path), state);
@@ -274,7 +304,7 @@ fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> io::Result<(
         }
     }
 
-    Ok(())
+    Ok(FlowControl::None)
 }
 
 pub(crate) fn build_prompt(state: &mut ShellState) -> String {
@@ -1729,10 +1759,9 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             let result = source_file(Path::new(path), state);
             state.positional = saved_positional;
             match result {
-                Ok(()) => {
-                    state.last_status = 0;
-                    Ok(Some(RunResult::Success(true)))
-                }
+                Ok(FlowControl::None) => Ok(Some(RunResult::Success(state.last_status == 0))),
+                Ok(FlowControl::Exit) => Ok(Some(RunResult::Exit)),
+                Ok(FlowControl::Return(code)) => Ok(Some(RunResult::Return(code))),
                 Err(err) => Err(format!("source: failed to read '{path}': {err}")),
             }
         }
