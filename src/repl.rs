@@ -17,7 +17,7 @@ use rustyline::{
 
 use crate::state::{ReplBinding, ShellState};
 use crate::term::cursor_column;
-use crate::{build_prompt, process_line, DEFAULT_PROMPT};
+use crate::{build_prompt, process_line, run_named_function, RunResult, DEFAULT_PROMPT};
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_STRING: &str = "\x1b[1;35m";
@@ -363,7 +363,13 @@ fn flush_word(out: &mut String, word: &mut String) {
     word.clear();
 }
 
-fn history_path() -> Option<PathBuf> {
+fn resolve_history_path(state: &ShellState) -> Option<PathBuf> {
+    if let Some(value) = state.repl.history_file.as_ref() {
+        if !value.trim().is_empty() {
+            return Some(PathBuf::from(value));
+        }
+        return None;
+    }
     if let Ok(value) = env::var("USH_HISTFILE") {
         if !value.trim().is_empty() {
             return Some(PathBuf::from(value));
@@ -482,7 +488,7 @@ fn parse_action(action: &str) -> Option<Cmd> {
 }
 
 pub fn run_repl(state: &mut ShellState) {
-    let history_path = history_path();
+    let mut history_path = resolve_history_path(state);
     let mut last_generation = state.repl.generation;
 
     let mut rl = match build_editor(state) {
@@ -498,6 +504,7 @@ pub fn run_repl(state: &mut ShellState) {
     }
 
     loop {
+        let next_history_path = resolve_history_path(state);
         if state.needs_cursor_check {
             if let Some(column) = cursor_column() {
                 if column != 1 {
@@ -514,14 +521,15 @@ pub fn run_repl(state: &mut ShellState) {
             state.last_output_newline = true;
         }
 
-        if state.repl.generation != last_generation {
+        if state.repl.generation != last_generation || next_history_path != history_path {
             last_generation = state.repl.generation;
             match build_editor(state) {
                 Ok(mut next) => {
-                    if let Some(path) = history_path.as_ref() {
+                    if let Some(path) = next_history_path.as_ref() {
                         let _ = next.load_history(path);
                     }
                     rl = next;
+                    history_path = next_history_path;
                 }
                 Err(err) => {
                     eprintln!("unshell: failed to reload repl: {err}");
@@ -540,7 +548,10 @@ pub fn run_repl(state: &mut ShellState) {
                 if !line.trim().is_empty() {
                     let _ = rl.add_history_entry(line.as_str());
                     if let Some(path) = history_path.as_ref() {
-                        let _ = rl.save_history(path);
+                        let _ = rl.append_history(path);
+                    }
+                    if !run_after_command_hook(&line, state) {
+                        break;
                     }
                 }
                 if !process_line(&line, state) {
@@ -558,6 +569,25 @@ pub fn run_repl(state: &mut ShellState) {
                 break;
             }
         }
+    }
+}
+
+fn run_after_command_hook(line: &str, state: &mut ShellState) -> bool {
+    const HOOK: &str = "unshell_after_command_input";
+    let saved_status = state.last_status;
+    let args = vec![line.to_string()];
+    let result = run_named_function(HOOK, &args, state);
+    state.last_status = saved_status;
+    let result = match result {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            return true;
+        }
+    };
+    match result {
+        Some(RunResult::Exit) => false,
+        Some(_) | None => true,
     }
 }
 

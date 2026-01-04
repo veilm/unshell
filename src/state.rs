@@ -43,6 +43,7 @@ pub struct ReplOptions {
     pub prompt_command: Option<String>,
     pub bindings: Vec<ReplBinding>,
     pub bracketed_paste: bool,
+    pub history_file: Option<String>,
     pub generation: u64,
 }
 
@@ -80,6 +81,7 @@ impl ShellState {
                 prompt_command: None,
                 bindings: Vec::new(),
                 bracketed_paste: false,
+                history_file: None,
                 generation: 0,
             },
             interactive: false,

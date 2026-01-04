@@ -1166,7 +1166,7 @@ fn is_valid_var_name(name: &str) -> bool {
     true
 }
 
-enum RunResult {
+pub(crate) enum RunResult {
     Success(bool),
     Exit,
     Return(i32),
@@ -1334,6 +1334,21 @@ fn run_function(
         FlowControl::Return(code) => Ok(RunResult::Success(code == 0)),
         FlowControl::None => Ok(RunResult::Success(state.last_status == 0)),
     }
+}
+
+pub(crate) fn run_named_function(
+    name: &str,
+    args: &[String],
+    state: &mut ShellState,
+) -> Result<Option<RunResult>, String> {
+    let Some(func) = state.functions.get(name).cloned() else {
+        return Ok(None);
+    };
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(name.to_string());
+    call_args.extend(args.iter().cloned());
+    let result = run_function(&call_args, func, state)?;
+    Ok(Some(result))
 }
 
 fn parse_foreach_tokens(tokens: &[OpToken]) -> Option<ForeachTokens> {
@@ -1699,6 +1714,19 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         "on" => state.repl.bracketed_paste = true,
                         "off" => state.repl.bracketed_paste = false,
                         _ => return Err("set: repl.bracketed_paste expects on|off".into()),
+                    }
+                    state.repl.generation += 1;
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.history.file" => {
+                    if args.len() != 3 {
+                        return Err("set: repl.history.file expects PATH or 'default'".into());
+                    }
+                    if args[2] == "default" {
+                        state.repl.history_file = None;
+                    } else {
+                        state.repl.history_file = Some(args[2].clone());
                     }
                     state.repl.generation += 1;
                     state.last_status = 0;

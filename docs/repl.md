@@ -18,6 +18,8 @@ Resolution order:
 3. `XDG_DATA_HOME/unshell/histfile`
 4. `$HOME/.local/share/histfile`
 
+The REPL appends new entries to the history file so multiple sessions can share the same file without clobbering each other's updates.
+
 ## Startup Sourcing
 
 Startup sourcing applies to both REPL and script runs. See `docs/spec.md` for the order and flags.
@@ -47,6 +49,9 @@ set repl.mode emacs
 set repl.completion.command fzf
 set repl.completion.command off
 
+set repl.history.file default
+set repl.history.file /tmp/ush-history
+
 set repl.prompt.command 'echo "unshell> "'
 set repl.prompt.command off
 
@@ -63,6 +68,12 @@ set repl.bind ctrl-a beginning-of-line
 set repl.bind ctrl-e end-of-line
 set repl.bind esc accept-line
 ```
+
+`set repl.history.file default` recomputes the history path using the resolution order above, even if it was already using the default path.
+
+## Hooks
+
+If a function named `unshell_after_command_input` is defined, the REPL calls it after history is updated and before the command executes. The raw input line is passed as `$1`.
 
 ## Key Names
 
