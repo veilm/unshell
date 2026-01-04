@@ -34,6 +34,7 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
 The REPL passes file candidates to the completion command on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). When the command is missing or disabled, Rustyline's filename completion uses prefix matching and auto-completes when there is a single candidate.
+Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
 
 ## Highlighting
 
@@ -61,6 +62,7 @@ set repl.bracketed_paste off
 set repl.bind ctrl-e end-of-line
 set repl.bind alt-f forward-word
 set repl.bind tab complete
+set repl.bind btab complete
 set repl.bind left backward-word
 set repl.bind right forward-word
 set repl.bind ctrl-k kill-line
@@ -79,7 +81,7 @@ If a function named `unshell_after_command_input` is defined, the REPL calls it 
 
 - letters with modifiers: `ctrl-a`, `alt-f`
 - arrows: `left`, `right`, `up`, `down`
-- `tab`, `enter`, `esc`, `backspace`
+- `tab`, `btab`, `enter`, `esc`, `backspace`
 
 ## Binding Actions
 

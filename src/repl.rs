@@ -3,6 +3,8 @@ use std::env;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use rustyline::completion::{Completer as CompletionTrait, FilenameCompleter, Pair};
 use rustyline::config::Configurer;
@@ -11,8 +13,9 @@ use rustyline::highlight::Highlighter;
 use rustyline::history::DefaultHistory;
 use rustyline::line_buffer::LineBuffer;
 use rustyline::{
-    At, Cmd, CompletionType, Completer, Config, Context, EditMode, Editor, EventHandler, Helper,
-    Hinter, KeyCode, KeyEvent, Modifiers, Movement, Result, Validator, Word,
+    At, Cmd, CompletionType, Completer, ConditionalEventHandler, Config, Context, EditMode, Editor,
+    Event, EventContext, EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, Movement,
+    RepeatCount, Result, Validator, Word,
 };
 
 use crate::state::{ReplBinding, ShellState};
@@ -32,6 +35,7 @@ const KEYWORDS: &[&str] = &[
 struct FuzzyCompleter {
     command: Vec<String>,
     fallback: FilenameCompleter,
+    start_last: Arc<AtomicBool>,
 }
 
 impl CompletionTrait for FuzzyCompleter {
@@ -68,7 +72,8 @@ impl CompletionTrait for FuzzyCompleter {
         }
 
         let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
-        match run_fuzzy(&self.command, &choices, query) {
+        let start_last = self.start_last.swap(false, Ordering::SeqCst);
+        match run_fuzzy(&self.command, &choices, query, start_last) {
             FuzzyOutcome::Selected(sel) => {
                 let selected = candidates
                     .iter()
@@ -188,7 +193,7 @@ enum FuzzyOutcome {
     Unavailable,
 }
 
-fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcome {
+fn run_fuzzy(command: &[String], choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome {
     let mut cmd = Command::new(&command[0]);
     if command.len() > 1 {
         cmd.args(&command[1..]);
@@ -220,6 +225,9 @@ fn run_fuzzy(command: &[String], choices: &[String], query: &str) -> FuzzyOutcom
         .stderr(Stdio::null());
     if !query.is_empty() {
         cmd.arg("--query").arg(query);
+    }
+    if start_last {
+        cmd.arg("--bind").arg("load:last");
     }
 
     let mut child = match cmd.spawn() {
@@ -289,6 +297,24 @@ fn set_cursor_visible(visible: bool) -> std::io::Result<()> {
 struct ReplHelper {
     #[rustyline(Completer)]
     completer: FuzzyCompleter,
+}
+
+struct CompletionEventHandler {
+    start_last: bool,
+    flag: Arc<AtomicBool>,
+}
+
+impl ConditionalEventHandler for CompletionEventHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        _ctx: &EventContext,
+    ) -> Option<Cmd> {
+        self.flag.store(self.start_last, Ordering::SeqCst);
+        Some(Cmd::Complete)
+    }
 }
 
 impl Highlighter for ReplHelper {
@@ -395,10 +421,12 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
         .completion_type(CompletionType::List);
     let config = config_builder.build();
 
+    let start_last = Arc::new(AtomicBool::new(false));
     let helper = ReplHelper {
         completer: FuzzyCompleter {
             command: state.repl.completion_command.clone(),
             fallback: FilenameCompleter::new(),
+            start_last: start_last.clone(),
         },
     };
 
@@ -406,21 +434,47 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
     rl.set_auto_add_history(false);
     let _ = rl.enable_bracketed_paste(state.repl.bracketed_paste);
     rl.set_helper(Some(helper));
-    apply_bindings(&mut rl, &state.repl.bindings);
+    apply_bindings(&mut rl, &state.repl.bindings, start_last);
     Ok(rl)
 }
 
-fn apply_bindings(rl: &mut Editor<ReplHelper, DefaultHistory>, bindings: &[ReplBinding]) {
+fn apply_bindings(
+    rl: &mut Editor<ReplHelper, DefaultHistory>,
+    bindings: &[ReplBinding],
+    start_last: Arc<AtomicBool>,
+) {
+    let mut saw_btab = false;
     for binding in bindings {
         let Some(key_event) = parse_key(&binding.key) else {
             eprintln!("unshell: repl.bind ignored invalid key '{}'", binding.key);
             continue;
         };
+        if key_event.0 == KeyCode::BackTab {
+            saw_btab = true;
+        }
+        if binding.action.trim() == "complete" && key_event.0 == KeyCode::BackTab {
+            let handler = CompletionEventHandler {
+                start_last: true,
+                flag: start_last.clone(),
+            };
+            rl.bind_sequence(key_event, EventHandler::Conditional(Box::new(handler)));
+            continue;
+        }
         let Some(cmd) = parse_action(&binding.action) else {
             eprintln!("unshell: repl.bind ignored invalid action '{}'", binding.action);
             continue;
         };
         rl.bind_sequence(key_event, EventHandler::Simple(cmd));
+    }
+    if !saw_btab {
+        let handler = CompletionEventHandler {
+            start_last: true,
+            flag: start_last,
+        };
+        rl.bind_sequence(
+            KeyEvent(KeyCode::BackTab, Modifiers::NONE),
+            EventHandler::Conditional(Box::new(handler)),
+        );
     }
 }
 
@@ -449,6 +503,7 @@ fn parse_key(key: &str) -> Option<KeyEvent> {
 
     match key {
         "tab" => Some(KeyEvent(KeyCode::Tab, Modifiers::NONE)),
+        "btab" => Some(KeyEvent(KeyCode::BackTab, Modifiers::NONE)),
         "enter" => Some(KeyEvent(KeyCode::Enter, Modifiers::NONE)),
         "esc" => Some(KeyEvent(KeyCode::Esc, Modifiers::NONE)),
         "backspace" => Some(KeyEvent(KeyCode::Backspace, Modifiers::NONE)),
