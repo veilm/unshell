@@ -54,6 +54,19 @@ impl CompletionTrait for FuzzyCompleter {
             return Ok((start, candidates));
         }
 
+        if !query.is_empty() {
+            let mut prefix_matches: Vec<Pair> = candidates
+                .iter()
+                .filter(|c| c.display.starts_with(query))
+                .cloned()
+                .collect();
+            if prefix_matches.len() == 1 {
+                // Prefer prefix matches to avoid fuzzy surprises like "sour" vs "src".
+                finalize_completion(&mut prefix_matches[0]);
+                return Ok((start, prefix_matches));
+            }
+        }
+
         let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
         match run_fuzzy(&self.command, &choices, query) {
             FuzzyOutcome::Selected(sel) => {
@@ -62,11 +75,7 @@ impl CompletionTrait for FuzzyCompleter {
                     .find(|c| c.display == sel)
                     .cloned();
                 if let Some(mut choice) = selected {
-                    let is_dir = choice.replacement.ends_with('/');
-                    choice.replacement = quote_completion(&choice.replacement);
-                    if !is_dir {
-                        choice.replacement.push(' ');
-                    }
+                    finalize_completion(&mut choice);
                     Ok((start, vec![choice]))
                 } else {
                     Ok((start, candidates))
@@ -108,6 +117,14 @@ fn quote_completion(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+fn finalize_completion(choice: &mut Pair) {
+    let is_dir = choice.replacement.ends_with('/');
+    choice.replacement = quote_completion(&choice.replacement);
+    if !is_dir {
+        choice.replacement.push(' ');
+    }
 }
 
 fn word_start<'a>(line: &'a str, pos: usize) -> (usize, &'a str) {
