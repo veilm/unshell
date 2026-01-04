@@ -4,6 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::io::IsTerminal;
 use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -1934,6 +1935,8 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
     let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
     let mut capture_read: Option<File> = None;
+    let mut pipeline_pgrp: Option<libc::pid_t> = None;
+    let mut fg_guard: Option<ForegroundGuard> = None;
 
     let mut child_count = 0usize;
     for (idx, spec) in commands.iter().enumerate() {
@@ -2014,6 +2017,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
             }
         }
 
+        configure_process_group(&mut cmd, pipeline_pgrp);
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
@@ -2029,6 +2033,12 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         }
 
         if let Some(child) = child {
+            let child_pid = child.id() as libc::pid_t;
+            let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
+            let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
+            if fg_guard.is_none() && state.interactive {
+                fg_guard = ForegroundGuard::new(desired_pgrp);
+            }
             child_count += 1;
             children.push((spec.args[0].clone(), child));
         }
@@ -2102,6 +2112,8 @@ fn run_pipeline_stages(
     let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
     let mut capture_read: Option<File> = None;
+    let mut pipeline_pgrp: Option<libc::pid_t> = None;
+    let mut fg_guard: Option<ForegroundGuard> = None;
 
     for (idx, stage) in stages.iter().enumerate() {
         let is_last = idx + 1 == stages.len();
@@ -2241,6 +2253,7 @@ fn run_pipeline_stages(
             }
         }
 
+        configure_process_group(&mut cmd, pipeline_pgrp);
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
@@ -2256,6 +2269,12 @@ fn run_pipeline_stages(
         }
 
         if let Some(child) = child {
+            let child_pid = child.id() as libc::pid_t;
+            let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
+            let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
+            if fg_guard.is_none() && state.interactive {
+                fg_guard = ForegroundGuard::new(desired_pgrp);
+            }
             children.push((name, child));
         }
     }
@@ -2289,6 +2308,47 @@ fn run_pipeline_stages(
 
     state.last_status = last_status;
     Ok(last_success)
+}
+
+struct ForegroundGuard {
+    tty_fd: i32,
+    shell_pgrp: libc::pid_t,
+}
+
+impl ForegroundGuard {
+    fn new(pgrp: libc::pid_t) -> Option<Self> {
+        if pgrp <= 0 || !io::stdin().is_terminal() {
+            return None;
+        }
+        let tty_fd = libc::STDIN_FILENO;
+        let shell_pgrp = unsafe { libc::tcgetpgrp(tty_fd) };
+        if shell_pgrp < 0 {
+            return None;
+        }
+        if unsafe { libc::tcsetpgrp(tty_fd, pgrp) } != 0 {
+            return None;
+        }
+        Some(Self {
+            tty_fd,
+            shell_pgrp,
+        })
+    }
+}
+
+impl Drop for ForegroundGuard {
+    fn drop(&mut self) {
+        let _ = unsafe { libc::tcsetpgrp(self.tty_fd, self.shell_pgrp) };
+    }
+}
+
+fn configure_process_group(cmd: &mut Command, pgrp: Option<libc::pid_t>) {
+    unsafe {
+        cmd.pre_exec(move || {
+            let target = pgrp.unwrap_or(0);
+            let _ = libc::setpgid(0, target);
+            Ok(())
+        });
+    }
 }
 
 fn with_redirections<T>(redirs: &Redirections, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -2433,21 +2493,26 @@ fn dup2_fd(src: i32, dst: i32) -> Result<(), String> {
 }
 
 fn expand_aliases_in_line(line: &str, state: &ShellState) -> Result<String, String> {
-    let segments = split_on_pipes(line);
-    if segments.len() <= 1 {
-        let tokens = parse_args(line)?;
-        let tokens = apply_alias(tokens, state)?;
-        return Ok(tokens.join(" "));
+    let tokens = match raw_line_tokens(line, state) {
+        Ok(tokens) => tokens,
+        Err(err) if err == "operators must be separated by whitespace" => {
+            return Ok(line.to_string());
+        }
+        Err(err) => return Err(err),
+    };
+    let mut out = Vec::new();
+    for token in tokens {
+        match token {
+            OpToken::Word(word) => out.push(word.value),
+            OpToken::Op(op) => out.push(match op {
+                Operator::Pipe => "|".to_string(),
+                Operator::And => "&&".to_string(),
+                Operator::Or => "||".to_string(),
+                Operator::Semi => ";".to_string(),
+            }),
+        }
     }
-
-    let mut expanded_segments = Vec::new();
-    for segment in segments {
-        let tokens = parse_args(segment.trim())?;
-        let tokens = apply_alias(tokens, state)?;
-        expanded_segments.push(tokens.join(" "));
-    }
-
-    Ok(expanded_segments.join(" | "))
+    Ok(out.join(" "))
 }
 
 pub(crate) fn execute_inline_block(
@@ -2555,8 +2620,24 @@ impl<'a> ScriptContext<'a> {
                     };
                 let brace_inline_tail = brace_inline_tail;
                 let run_child = if should_execute {
-                    self.evaluate_condition(condition.trim())
+                    match self
+                        .evaluate_condition(condition.trim())
                         .map_err(|err| self.format_line_error(&err, idx + 1, &line))?
+                    {
+                        RunResult::Success(success) => success,
+                        RunResult::Exit => {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Exit,
+                            })
+                        }
+                        RunResult::Return(code) => {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Return(code),
+                            })
+                        }
+                    }
                 } else {
                     false
                 };
@@ -3221,9 +3302,17 @@ impl<'a> ScriptContext<'a> {
 
         let run_child = if is_elif {
             if should_execute {
-                self.evaluate_condition(condition.trim()).map_err(|err| {
+                match self.evaluate_condition(condition.trim()).map_err(|err| {
                     self.format_line_error(&err, block_start, &format!("if {condition}"))
-                })?
+                })? {
+                    RunResult::Success(success) => success,
+                    RunResult::Exit => {
+                        return Ok((FlowControl::Exit, block_start + 1, true));
+                    }
+                    RunResult::Return(code) => {
+                        return Ok((FlowControl::Return(code), block_start + 1, true));
+                    }
+                }
             } else {
                 false
             }
@@ -3315,32 +3404,20 @@ impl<'a> ScriptContext<'a> {
         self.handle_else_chain(result.next, indent_level, should_execute && !run_child)
     }
 
-    fn evaluate_condition(&mut self, command: &str) -> Result<bool, String> {
-        let args = parse_args(command)?;
-        if args.is_empty() {
-            return Ok(false);
+    fn evaluate_condition(&mut self, command: &str) -> Result<RunResult, String> {
+        if command.trim().is_empty() {
+            return Ok(RunResult::Success(false));
         }
-        let args = apply_alias(args, &self.state)?;
-        let expanded = expand_tokens_with_meta(args, &self.state)?;
-        let words: Vec<WordToken> = expanded
-            .into_iter()
-            .map(|token| WordToken {
-                value: token.value,
-                protected: token.protected,
-            })
-            .collect();
-        let (cmd_args, redirs) = parse_redirections(words)?;
-        if cmd_args.is_empty() {
-            return Ok(false);
+        let tokens = raw_line_tokens(command, &self.state)?;
+        if tokens.is_empty() {
+            return Ok(RunResult::Success(false));
         }
-        let success = run_pipeline(
-            vec![CommandSpec {
-                args: cmd_args,
-                redirs,
-            }],
-            &mut self.state,
-        )?;
-        Ok(success)
+        let expanded = expand_op_tokens(&tokens, &self.state)?;
+        match run_expanded_tokens(&expanded, &mut self.state)? {
+            FlowControl::Exit => Ok(RunResult::Exit),
+            FlowControl::Return(code) => Ok(RunResult::Return(code)),
+            FlowControl::None => Ok(RunResult::Success(self.state.last_status == 0)),
+        }
     }
 
     fn find_block_end(&self, mut idx: usize, indent_level: usize) -> usize {

@@ -90,7 +90,7 @@ repl details: [repl guide](./docs/repl.md)
 
 ## install
 
-deps: Rust, Python (optional, for the default config)
+deps: Rust, Python (optional; for the default config)
 
 ```bash
 git clone https://github.com/veilm/unshell
