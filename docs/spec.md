@@ -10,6 +10,7 @@
 ### Execution & Pipes
 Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` sequences commands unconditionally, and `&&`/`||` short-circuit on success/failure. There is no special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
 Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
+Interactive shells run external pipelines in their own process group and temporarily hand off the controlling terminal. This lets terminal multiplexers report the active program and restores the shell as foreground after the pipeline completes.
 Non-zero exit codes only update `$?` and do not emit warnings by default.
 Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
 Missing commands in a pipeline report an error but do not abort the rest of the pipeline.
@@ -119,7 +120,7 @@ Parentheses still group pipelines without invoking capture semantics, letting us
 ```
 
 ### Control Flow Blocks
-Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts.
+Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. `if`/`elif` conditions accept full command chains, including pipes and `&&`/`||`/`;` logic, and the block runs if the final status is zero. **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts, with full command-line evaluation for conditions.
 ```bash
 if test -f config.toml
 	echo "config exists"
@@ -129,6 +130,8 @@ else
 if test -f config.toml {
     echo "config exists"
 }
+if true && false || true { echo "short-circuit ok" }
+if echo hi | grep h { echo "pipeline ok" }
 ```
 
 ### Functions: `def`

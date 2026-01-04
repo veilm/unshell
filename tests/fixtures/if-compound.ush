@@ -1,0 +1,4 @@
+if true && false || true { echo ok1 }
+if true && false { echo bad1 } else { echo ok2 }
+if echo hi | grep -q h { echo ok3 }
+if false ; true { echo ok4 }
