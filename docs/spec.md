@@ -111,7 +111,7 @@ $cmd $payload
 ```bash
 source ./env.ush prod
 ```
-**Current implementation:** `source PATH [ARGS...]` runs in the parent shell and restores the caller’s positional args afterward.
+**Current implementation:** `source PATH [ARGS...]` runs in the parent shell and restores the caller’s positional args afterward. `exit` inside a sourced file exits the current shell (including startup scripts), and `$?` reflects the last status from the sourced commands.
 
 ### Grouping with Parentheses
 Parentheses still group pipelines without invoking capture semantics, letting users control precedence or isolate redirections without new processes unless the OS requires them.

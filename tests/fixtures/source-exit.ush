@@ -1,0 +1,2 @@
+source tests/fixtures/source-exit-body.ush
+echo after
