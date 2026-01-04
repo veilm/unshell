@@ -23,7 +23,7 @@ def list_c { ls }
 list_c | grep c
 { echo test ; ls } | grep test
 ```
-Operators must be separated by whitespace: `ls | rg foo` is valid, `ls|rg foo` is a parse error. The same whitespace rule applies to redirection operators.
+Operators (`|`, `;`, `&&`, `||`) are recognized without surrounding whitespace (e.g., `ls|rg foo`, `echo hi;echo bye`). Redirection operators still require whitespace-separated tokens to avoid ambiguity.
 
 ### Redirection
 Redirection uses explicit operator tokens and applies to the current pipeline segment only (e.g., `ls | rg foo out> log.txt` redirects `rg` output, not `ls`). Operators are recognized only in unquoted tokens.

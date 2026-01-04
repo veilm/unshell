@@ -534,17 +534,8 @@ fn raw_line_tokens(line: &str, state: &ShellState) -> Result<Vec<OpToken>, Strin
 
 fn push_tokens_as_ops(tokens: Vec<String>, out: &mut Vec<OpToken>) -> Result<(), String> {
     for token in tokens {
-        if let Some(op) = token_to_operator(&token) {
-            out.push(OpToken::Op(op));
-            continue;
-        }
-        if contains_top_level_operator(&token) {
-            return Err("operators must be separated by whitespace".into());
-        }
-        out.push(OpToken::Word(WordToken {
-            value: token,
-            protected: false,
-        }));
+        let parts = split_token_on_operators(&token, false);
+        out.extend(parts);
     }
     Ok(())
 }
@@ -661,35 +652,16 @@ fn split_token_ops(token: &ExpandedToken) -> Result<Vec<OpToken>, String> {
         })]);
     }
 
-    if let Some(op) = token_to_operator(&token.value) {
-        return Ok(vec![OpToken::Op(op)]);
-    }
-
-    if contains_top_level_operator(&token.value) {
-        return Err("operators must be separated by whitespace".into());
-    }
-
-    Ok(vec![OpToken::Word(WordToken {
-        value: token.value.clone(),
-        protected: token.protected,
-    })])
+    Ok(split_token_on_operators(&token.value, token.protected))
 }
 
 fn token_contains_operator(token: &str) -> bool {
     token.contains(';') || token.contains("||") || token.contains('|') || token.contains("&&")
 }
 
-fn token_to_operator(token: &str) -> Option<Operator> {
-    match token {
-        "|" => Some(Operator::Pipe),
-        "||" => Some(Operator::Or),
-        "&&" => Some(Operator::And),
-        ";" => Some(Operator::Semi),
-        _ => None,
-    }
-}
-
-fn contains_top_level_operator(token: &str) -> bool {
+fn split_token_on_operators(token: &str, protected: bool) -> Vec<OpToken> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
     let chars: Vec<char> = token.chars().collect();
     let mut bracket_depth = 0;
     let mut paren_depth = 0;
@@ -702,6 +674,10 @@ fn contains_top_level_operator(token: &str) -> bool {
         let ch = chars[idx];
 
         if in_double && ch == '\\' && paren_depth == 0 {
+            current.push(ch);
+            if idx + 1 < chars.len() {
+                current.push(chars[idx + 1]);
+            }
             idx += 2;
             continue;
         }
@@ -709,11 +685,13 @@ fn contains_top_level_operator(token: &str) -> bool {
         match ch {
             '\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
                 in_single = !in_single;
+                current.push(ch);
                 idx += 1;
                 continue;
             }
             '"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 in_double = !in_double;
+                current.push(ch);
                 idx += 1;
                 continue;
             }
@@ -723,6 +701,8 @@ fn contains_top_level_operator(token: &str) -> bool {
         if ch == '$' && bracket_depth == 0 && paren_depth == 0 {
             if idx + 1 < chars.len() && chars[idx + 1] == '(' {
                 paren_depth = 1;
+                current.push(ch);
+                current.push('(');
                 idx += 2;
                 continue;
             }
@@ -731,6 +711,7 @@ fn contains_top_level_operator(token: &str) -> bool {
         if ch == '[' && paren_depth == 0 {
             if bracket_depth == 0 {
                 if idx + 1 < chars.len() && chars[idx + 1].is_whitespace() {
+                    current.push(ch);
                     idx += 1;
                     continue;
                 }
@@ -738,24 +719,28 @@ fn contains_top_level_operator(token: &str) -> bool {
             } else {
                 bracket_depth += 1;
             }
+            current.push(ch);
             idx += 1;
             continue;
         }
 
         if ch == ']' && bracket_depth > 0 {
             bracket_depth -= 1;
+            current.push(ch);
             idx += 1;
             continue;
         }
 
         if ch == '(' && paren_depth > 0 {
             paren_depth += 1;
+            current.push(ch);
             idx += 1;
             continue;
         }
 
         if ch == ')' && paren_depth > 0 {
             paren_depth -= 1;
+            current.push(ch);
             idx += 1;
             continue;
         }
@@ -763,11 +748,13 @@ fn contains_top_level_operator(token: &str) -> bool {
         if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single {
             if ch == '{' {
                 brace_depth += 1;
+                current.push(ch);
                 idx += 1;
                 continue;
             }
             if ch == '}' && brace_depth > 0 {
                 brace_depth -= 1;
+                current.push(ch);
                 idx += 1;
                 continue;
             }
@@ -779,18 +766,68 @@ fn contains_top_level_operator(token: &str) -> bool {
             && !in_double
             && !in_single
         {
-            if ch == ';' || ch == '|' {
-                return true;
+            if ch == ';' {
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(WordToken {
+                        value: current.clone(),
+                        protected,
+                    }));
+                    current.clear();
+                }
+                parts.push(OpToken::Op(Operator::Semi));
+                idx += 1;
+                continue;
+            }
+            if ch == '|' {
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(WordToken {
+                        value: current.clone(),
+                        protected,
+                    }));
+                    current.clear();
+                }
+                if idx + 1 < chars.len() && chars[idx + 1] == '|' {
+                    parts.push(OpToken::Op(Operator::Or));
+                    idx += 2;
+                } else {
+                    parts.push(OpToken::Op(Operator::Pipe));
+                    idx += 1;
+                }
+                continue;
             }
             if ch == '&' && idx + 1 < chars.len() && chars[idx + 1] == '&' {
-                return true;
+                if !current.is_empty() {
+                    parts.push(OpToken::Word(WordToken {
+                        value: current.clone(),
+                        protected,
+                    }));
+                    current.clear();
+                }
+                parts.push(OpToken::Op(Operator::And));
+                idx += 2;
+                continue;
             }
         }
 
+        current.push(ch);
         idx += 1;
     }
 
-    false
+    if !current.is_empty() {
+        parts.push(OpToken::Word(WordToken {
+            value: current,
+            protected,
+        }));
+    }
+
+    if parts.is_empty() {
+        parts.push(OpToken::Word(WordToken {
+            value: token.to_string(),
+            protected,
+        }));
+    }
+
+    parts
 }
 
 fn split_tokens_on_semicolons(tokens: &[OpToken]) -> Vec<Vec<OpToken>> {

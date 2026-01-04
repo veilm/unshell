@@ -1,0 +1,5 @@
+echo hi;echo bye
+printf '%s\n' one two|grep two
+false|| echo ok
+true &&echo yep
+echo alpha;false&&echo nope;true||echo ok
