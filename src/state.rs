@@ -42,6 +42,7 @@ pub struct ReplOptions {
     pub completion_command: Vec<String>,
     pub prompt_command: Option<String>,
     pub bindings: Vec<ReplBinding>,
+    pub bracketed_paste: bool,
     pub generation: u64,
 }
 
@@ -78,6 +79,7 @@ impl ShellState {
                 completion_command: vec!["fzf".to_string()],
                 prompt_command: None,
                 bindings: Vec::new(),
+                bracketed_paste: false,
                 generation: 0,
             },
             interactive: false,

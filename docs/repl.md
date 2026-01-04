@@ -50,6 +50,9 @@ set repl.completion.command off
 set repl.prompt.command 'echo "unshell> "'
 set repl.prompt.command off
 
+set repl.bracketed_paste on
+set repl.bracketed_paste off
+
 set repl.bind ctrl-e end-of-line
 set repl.bind alt-f forward-word
 set repl.bind tab complete
@@ -85,3 +88,5 @@ To remove a binding:
 ```bash
 set repl.bind ctrl-e off
 ```
+
+Bracketed paste defaults to off in vi mode and on in emacs mode; use `set repl.bracketed_paste on|off` to override.

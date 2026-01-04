@@ -367,10 +367,10 @@ fn history_path() -> Option<PathBuf> {
 }
 
 fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>> {
-    let config = Config::builder()
+    let config_builder = Config::builder()
         .edit_mode(if state.repl.vi_mode { EditMode::Vi } else { EditMode::Emacs })
-        .completion_type(CompletionType::List)
-        .build();
+        .completion_type(CompletionType::List);
+    let config = config_builder.build();
 
     let helper = ReplHelper {
         completer: FuzzyCompleter {
@@ -381,6 +381,7 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
 
     let mut rl = Editor::with_config(config)?;
     rl.set_auto_add_history(false);
+    let _ = rl.enable_bracketed_paste(state.repl.bracketed_paste);
     rl.set_helper(Some(helper));
     apply_bindings(&mut rl, &state.repl.bindings);
     Ok(rl)

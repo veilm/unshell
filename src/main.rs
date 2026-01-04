@@ -1676,9 +1676,29 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                     }
                     let mode = args[2].as_str();
                     match mode {
-                        "vi" => state.repl.vi_mode = true,
-                        "emacs" => state.repl.vi_mode = false,
+                        "vi" => {
+                            state.repl.vi_mode = true;
+                            state.repl.bracketed_paste = false;
+                        }
+                        "emacs" => {
+                            state.repl.vi_mode = false;
+                            state.repl.bracketed_paste = true;
+                        }
                         _ => return Err("set: repl.mode expects vi|emacs".into()),
+                    }
+                    state.repl.generation += 1;
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "repl.bracketed_paste" => {
+                    if args.len() != 3 {
+                        return Err("set: repl.bracketed_paste expects on|off".into());
+                    }
+                    let value = args[2].as_str();
+                    match value {
+                        "on" => state.repl.bracketed_paste = true,
+                        "off" => state.repl.bracketed_paste = false,
+                        _ => return Err("set: repl.bracketed_paste expects on|off".into()),
                     }
                     state.repl.generation += 1;
                     state.last_status = 0;
