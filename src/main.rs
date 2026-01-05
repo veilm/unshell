@@ -25,10 +25,9 @@ use crate::parser::{
     split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
 };
 use crate::state::{lookup_var, write_locals_file, FunctionBody, FunctionDef, ShellState};
-use crate::workers::{
-    run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker,
-    trim_trailing_newline, write_block_file,
-};
+use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
+#[cfg(feature = "repl")]
+use crate::workers::trim_trailing_newline;
 #[cfg(not(feature = "repl"))]
 use crate::term::cursor_column;
 
@@ -307,6 +306,7 @@ fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> Result<FlowC
     Ok(FlowControl::None)
 }
 
+#[cfg(feature = "repl")]
 pub(crate) fn build_prompt(state: &mut ShellState) -> String {
     let command = state.repl.prompt_command.clone();
     match command.as_deref() {
@@ -321,6 +321,7 @@ pub(crate) fn build_prompt(state: &mut ShellState) -> String {
     }
 }
 
+#[cfg(feature = "repl")]
 fn prompt_command_output(command: &str, state: &mut ShellState) -> Result<String, String> {
     let (mut read, write) = create_pipe()?;
     let saved_stdout = dup_fd(libc::STDOUT_FILENO)?;
@@ -1373,6 +1374,7 @@ fn run_function(
     }
 }
 
+#[cfg(feature = "repl")]
 pub(crate) fn run_named_function(
     name: &str,
     args: &[String],
