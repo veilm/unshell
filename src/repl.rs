@@ -395,38 +395,7 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
             return FuzzyOutcome::Unavailable;
         }
 
-        let args = fzf_args();
-        let mut cmd = Command::new("fzf");
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if !query.is_empty() {
-            cmd.arg("--query").arg(query);
-        }
-        if start_last && !fzf_option_disabled("load:last") {
-            cmd.arg("--bind").arg("load:last");
-        }
-
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(_) => return FuzzyOutcome::Unavailable,
-        };
-        let _ = set_cursor_visible(false);
-        let _ = move_cursor_to_eol();
-        let _cursor_guard = CursorGuard;
-
-        {
-            let stdin = match child.stdin.as_mut() {
-                Some(stdin) => stdin,
-                None => return FuzzyOutcome::Unavailable,
-            };
-            for choice in choices {
-                let _ = writeln!(stdin, "{choice}");
-            }
-        }
-
-        let output = match child.wait_with_output() {
+        let output = match run_fzf_once(choices, query, start_last, Stdio::inherit()) {
             Ok(output) => output,
             Err(_) => return FuzzyOutcome::Unavailable,
         };
@@ -436,7 +405,11 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
                 return FuzzyOutcome::Cancelled;
             }
             if code == 1 || code == 2 {
-                let err = String::from_utf8_lossy(&output.stderr);
+                let retry = match run_fzf_once(choices, query, start_last, Stdio::piped()) {
+                    Ok(output) => output,
+                    Err(_) => return FuzzyOutcome::Unavailable,
+                };
+                let err = String::from_utf8_lossy(&retry.stderr);
                 if let Some(option) = parse_unknown_option(&err) {
                     disable_fzf_option(&option);
                     continue;
@@ -465,6 +438,42 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
         }
         return FuzzyOutcome::Selected(selected);
     }
+}
+
+fn run_fzf_once(
+    choices: &[String],
+    query: &str,
+    start_last: bool,
+    stderr: Stdio,
+) -> std::io::Result<std::process::Output> {
+    let args = fzf_args();
+    let mut cmd = Command::new("fzf");
+    cmd.args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(stderr);
+    if !query.is_empty() {
+        cmd.arg("--query").arg(query);
+    }
+    if start_last && !fzf_option_disabled("load:last") {
+        cmd.arg("--bind").arg("load:last");
+    }
+
+    let mut child = cmd.spawn()?;
+    let _ = set_cursor_visible(false);
+    let _ = move_cursor_to_eol();
+    let _cursor_guard = CursorGuard;
+
+    {
+        let stdin = child.stdin.as_mut().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Other, "missing fzf stdin")
+        })?;
+        for choice in choices {
+            let _ = writeln!(stdin, "{choice}");
+        }
+    }
+
+    child.wait_with_output()
 }
 
 fn fzf_disabled_options() -> &'static Mutex<std::collections::HashSet<String>> {
