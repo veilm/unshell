@@ -412,6 +412,7 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
                     continue;
                 }
                 if let Some(path) = stderr_path.as_ref() {
+                    eprintln!();
                     eprintln!(
                         "unshell: fzf failed; your version may be too old. see {path:?} for details"
                     );
@@ -469,7 +470,7 @@ fn run_fzf_once(
     }
 
     let output = child.wait_with_output()?;
-    let stderr_path = write_fzf_stderr(&output.stderr)?;
+    let stderr_path = write_fzf_stderr(&args, &output.stderr)?;
     Ok((output, stderr_path))
 }
 
@@ -489,12 +490,14 @@ fn fzf_option_disabled(option: &str) -> bool {
 }
 
 fn parse_unknown_option(stderr: &str) -> Option<String> {
-    if !stderr.contains("unknown option:") {
-        return None;
-    }
-    for token in stderr.split_whitespace() {
-        if token.starts_with('-') {
-            return Some(token.to_string());
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("unknown option:") {
+            let rest = rest.trim();
+            let token = rest.split_whitespace().next().unwrap_or("");
+            if token.starts_with('-') {
+                return Some(token.to_string());
+            }
         }
     }
     None
@@ -556,7 +559,10 @@ fn fzf_args() -> Vec<&'static str> {
     args
 }
 
-fn write_fzf_stderr(stderr: &[u8]) -> std::io::Result<Option<std::path::PathBuf>> {
+fn write_fzf_stderr(
+    args: &[&'static str],
+    stderr: &[u8],
+) -> std::io::Result<Option<std::path::PathBuf>> {
     if stderr.is_empty() {
         return Ok(None);
     }
@@ -566,7 +572,12 @@ fn write_fzf_stderr(stderr: &[u8]) -> std::io::Result<Option<std::path::PathBuf>
         .unwrap_or_default()
         .as_nanos();
     let path = dir.join(format!("ush-fzf-stderr-{nanos}.txt"));
-    std::fs::write(&path, stderr)?;
+    let mut buffer = Vec::new();
+    buffer.extend_from_slice(b"fzf ");
+    buffer.extend_from_slice(args.join(" ").as_bytes());
+    buffer.extend_from_slice(b"\n\n");
+    buffer.extend_from_slice(stderr);
+    std::fs::write(&path, buffer)?;
     Ok(Some(path))
 }
 
