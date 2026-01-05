@@ -173,6 +173,7 @@ fn list_dir_candidates(dir_prefix: &str, _ctx: &Context<'_>) -> Vec<Pair> {
         }
     }
 
+    entries.sort_by(|a, b| a.display.cmp(&b.display));
     entries
 }
 
