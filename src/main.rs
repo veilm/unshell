@@ -1771,12 +1771,9 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                     state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
-                "repl.completion.mode" | "repl.completion.command" => {
+                "repl.completion.mode" => {
                     if args.len() != 3 {
                         return Err("set: repl.completion.mode expects fzf|list|off".into());
-                    }
-                    if args[1] == "repl.completion.command" {
-                        eprintln!("unshell: repl.completion.command is deprecated; use repl.completion.mode");
                     }
                     state.repl.completion_mode = match args[2].as_str() {
                         "fzf" => crate::state::ReplCompletionMode::Fzf,

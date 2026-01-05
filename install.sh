@@ -7,6 +7,11 @@ usage() {
 
 repl=on
 
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "error: cargo not found. install Rust from https://rustup.rs/ first."
+    exit 1
+fi
+
 for arg in "$@"; do
     case "$arg" in
         --no-repl)
