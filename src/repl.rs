@@ -3,6 +3,7 @@ use std::env;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -395,7 +396,7 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
             return FuzzyOutcome::Unavailable;
         }
 
-        let output = match run_fzf_once(choices, query, start_last, Stdio::inherit()) {
+        let (output, stderr_path) = match run_fzf_once(choices, query, start_last) {
             Ok(output) => output,
             Err(_) => return FuzzyOutcome::Unavailable,
         };
@@ -405,19 +406,14 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
                 return FuzzyOutcome::Cancelled;
             }
             if code == 1 || code == 2 {
-                let retry = match run_fzf_once(choices, query, start_last, Stdio::piped()) {
-                    Ok(output) => output,
-                    Err(_) => return FuzzyOutcome::Unavailable,
-                };
-                let err = String::from_utf8_lossy(&retry.stderr);
+                let err = String::from_utf8_lossy(&output.stderr);
                 if let Some(option) = parse_unknown_option(&err) {
                     disable_fzf_option(&option);
                     continue;
                 }
-                let summary = summarize_fzf_error(&err);
-                if !summary.is_empty() {
+                if let Some(path) = stderr_path.as_ref() {
                     eprintln!(
-                        "unshell: fzf failed; your version may be too old. unknown fzf error: {summary}"
+                        "unshell: fzf failed; your version may be too old. see {path:?} for details"
                     );
                 }
                 return FuzzyOutcome::Unavailable;
@@ -444,14 +440,13 @@ fn run_fzf_once(
     choices: &[String],
     query: &str,
     start_last: bool,
-    stderr: Stdio,
-) -> std::io::Result<std::process::Output> {
+) -> std::io::Result<(std::process::Output, Option<std::path::PathBuf>)> {
     let args = fzf_args();
     let mut cmd = Command::new("fzf");
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(stderr);
+        .stderr(Stdio::piped());
     if !query.is_empty() {
         cmd.arg("--query").arg(query);
     }
@@ -473,7 +468,9 @@ fn run_fzf_once(
         }
     }
 
-    child.wait_with_output()
+    let output = child.wait_with_output()?;
+    let stderr_path = write_fzf_stderr(&output.stderr)?;
+    Ok((output, stderr_path))
 }
 
 fn fzf_disabled_options() -> &'static Mutex<std::collections::HashSet<String>> {
@@ -492,18 +489,12 @@ fn fzf_option_disabled(option: &str) -> bool {
 }
 
 fn parse_unknown_option(stderr: &str) -> Option<String> {
-    const PREFIX: &str = "unknown option:";
-    for line in stderr.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix(PREFIX) {
-            let rest = rest.trim();
-            if rest.is_empty() {
-                continue;
-            }
-            let token = rest.split_whitespace().next().unwrap_or("");
-            if token.starts_with('-') {
-                return Some(token.to_string());
-            }
+    if !stderr.contains("unknown option:") {
+        return None;
+    }
+    for token in stderr.split_whitespace() {
+        if token.starts_with('-') {
+            return Some(token.to_string());
         }
     }
     None
@@ -565,14 +556,18 @@ fn fzf_args() -> Vec<&'static str> {
     args
 }
 
-fn summarize_fzf_error(stderr: &str) -> String {
-    for line in stderr.lines() {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
+fn write_fzf_stderr(stderr: &[u8]) -> std::io::Result<Option<std::path::PathBuf>> {
+    if stderr.is_empty() {
+        return Ok(None);
     }
-    String::new()
+    let dir = std::env::temp_dir();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = dir.join(format!("ush-fzf-stderr-{nanos}.txt"));
+    std::fs::write(&path, stderr)?;
+    Ok(Some(path))
 }
 
 struct CursorGuard;
