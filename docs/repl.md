@@ -7,7 +7,7 @@ When output is captured (non-tty stdout), the REPL inserts an inverted `$` marke
 ## Build Modes
 
 - default build includes the REPL
-- `make REPL=off` or `./install.sh --no-repl` builds a minimal stdin loop
+- `./install.sh --no-repl` builds a minimal stdin loop
 
 ## History
 
