@@ -3,6 +3,7 @@
 alias each foreach
 alias fn def
 alias function def
+alias quote ush-quote
 
 PWD=[pwd]
 OLDPWD=$PWD

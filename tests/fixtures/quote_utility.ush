@@ -1,0 +1,1 @@
+printf 'foo bar\nbaz\nhello"be\n\\"\n' | ./util/quote

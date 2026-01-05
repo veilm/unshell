@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+import sys
+
+
+def quote_record(record: str) -> str:
+    out = ['"']
+    for idx, ch in enumerate(record):
+        if ch == "\\" and idx + 1 < len(record) and record[idx + 1] == '"':
+            out.append("\\\\")
+            continue
+        if ch == '"':
+            out.append('\\"')
+        else:
+            out.append(ch)
+    out.append('"')
+    return "".join(out)
+
+
+def main() -> int:
+    data = sys.stdin.read()
+    if data == "":
+        return 0
+    records = data.splitlines()
+    quoted = [quote_record(record) for record in records]
+    sys.stdout.write(" ".join(quoted))
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

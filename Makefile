@@ -13,8 +13,18 @@ install:
 		echo "ush binary missing. run 'make build' first."; \
 		exit 1; \
 	fi
-	install -Dm755 target/release/ush $(DESTDIR)/usr/local/bin/ush
+	@dest="$(DESTDIR)/usr/local/bin/ush"; \
+	if [ -f "$$dest" ]; then \
+		if cmp -s target/release/ush "$$dest"; then \
+			echo "ush unchanged; skipping install."; \
+		else \
+			install -Dm755 target/release/ush "$$dest"; \
+		fi; \
+	else \
+		install -Dm755 target/release/ush "$$dest"; \
+	fi
 	install -Dm755 util/expansion_handler.py $(DESTDIR)/usr/local/bin/ush-expansion-handler
+	install -Dm755 util/quote $(DESTDIR)/usr/local/bin/ush-quote
 	@if [ ! -f $(DESTDIR)/etc/unshell/init ]; then \
 		install -Dm644 util/unshell_init $(DESTDIR)/etc/unshell/init; \
 	fi
