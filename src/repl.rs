@@ -534,7 +534,11 @@ fn fzf_args() -> Vec<&'static str> {
         let opt = opts[i];
         if opt.starts_with('-') {
             if fzf_option_disabled(opt) {
-                i += 1;
+                if i + 1 < opts.len() && !opts[i + 1].starts_with('-') {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
                 continue;
             }
             args.push(opt);
@@ -574,11 +578,24 @@ fn write_fzf_stderr(
     let path = dir.join(format!("ush-fzf-stderr-{nanos}.txt"));
     let mut buffer = Vec::new();
     buffer.extend_from_slice(b"fzf ");
-    buffer.extend_from_slice(args.join(" ").as_bytes());
+    buffer.extend_from_slice(format_fzf_args(args).as_bytes());
     buffer.extend_from_slice(b"\n\n");
     buffer.extend_from_slice(stderr);
     std::fs::write(&path, buffer)?;
     Ok(Some(path))
+}
+
+fn format_fzf_args(args: &[&str]) -> String {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        if arg.chars().any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'') {
+            let escaped = arg.replace('"', "\\\"");
+            out.push(format!("\"{escaped}\""));
+        } else {
+            out.push(arg.to_string());
+        }
+    }
+    out.join(" ")
 }
 
 struct CursorGuard;
