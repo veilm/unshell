@@ -13,20 +13,24 @@ install:
 		echo "ush binary missing. run 'make build' first."; \
 		exit 1; \
 	fi
-	@dest="$(DESTDIR)/usr/local/bin/ush"; \
+	@bin_dir="$(DESTDIR)/usr/local/bin"; \
+	init_dir="$(DESTDIR)/etc/unshell"; \
+	mkdir -p "$$bin_dir"; \
+	install -m755 util/expansion_handler.py "$$bin_dir/ush-expansion-handler"; \
+	install -m755 util/quote "$$bin_dir/ush-quote"; \
+	dest="$$bin_dir/ush"; \
 	if [ -f "$$dest" ]; then \
 		if cmp -s target/release/ush "$$dest"; then \
 			echo "ush unchanged; skipping install."; \
 		else \
-			install -Dm755 target/release/ush "$$dest"; \
+			install -m755 target/release/ush "$$dest"; \
 		fi; \
 	else \
-		install -Dm755 target/release/ush "$$dest"; \
+		install -m755 target/release/ush "$$dest"; \
 	fi
-	install -Dm755 util/expansion_handler.py $(DESTDIR)/usr/local/bin/ush-expansion-handler
-	install -Dm755 util/quote $(DESTDIR)/usr/local/bin/ush-quote
-	@if [ ! -f $(DESTDIR)/etc/unshell/init ]; then \
-		install -Dm644 util/unshell_init $(DESTDIR)/etc/unshell/init; \
+	@if [ ! -f "$$init_dir/init" ]; then \
+		mkdir -p "$$init_dir"; \
+		install -m644 util/unshell_init "$$init_dir/init"; \
 	fi
 
 test:
