@@ -14,8 +14,8 @@ use rustyline::history::DefaultHistory;
 use rustyline::line_buffer::LineBuffer;
 use rustyline::{
     At, Cmd, CompletionType, Completer, ConditionalEventHandler, Config, Context, EditMode, Editor,
-    Event, EventContext, EventHandler, Helper, Hinter, KeyCode, KeyEvent, Modifiers, Movement,
-    RepeatCount, Result, Validator, Word,
+    Event, EventContext, EventHandler, Helper, Hinter, InputMode, KeyCode, KeyEvent, Modifiers,
+    Movement, RepeatCount, Result, Validator, Word,
 };
 
 use crate::state::{ReplBinding, ShellState};
@@ -23,6 +23,7 @@ use crate::term::cursor_column;
 use crate::{build_prompt, process_line, run_named_function, RunResult, DEFAULT_PROMPT};
 
 const COLOR_RESET: &str = "\x1b[0m";
+const COLOR_COMMENT: &str = "\x1b[0;90m";
 const COLOR_STRING: &str = "\x1b[1;35m";
 const COLOR_KEYWORD: &str = "\x1b[1;31m";
 const COLOR_PROMPT: &str = "\x1b[1;32m";
@@ -51,7 +52,13 @@ impl CompletionTrait for FuzzyCompleter {
             return self.fallback.complete(line, pos, ctx);
         }
 
-        let (start, fragment) = word_start(line, pos);
+        let quote_ctx = quote_context(line, pos);
+        let (start, fragment) = if let Some(ctx) = quote_ctx.as_ref() {
+            let start = ctx.start + 1;
+            (start, &line[start..pos])
+        } else {
+            word_start(line, pos)
+        };
         let (dir_prefix, query) = split_dir_query(fragment);
         let include_hidden = fragment.starts_with('.') || fragment.contains("/.");
         let candidates = list_dir_candidates(&dir_prefix, include_hidden);
@@ -67,7 +74,7 @@ impl CompletionTrait for FuzzyCompleter {
                 .collect();
             if prefix_matches.len() == 1 {
                 // Prefer prefix matches to avoid fuzzy surprises like "sour" vs "src".
-                finalize_completion(&mut prefix_matches[0]);
+                finalize_completion_with_context(&mut prefix_matches[0], quote_ctx.as_ref());
                 return Ok((start, prefix_matches));
             }
         }
@@ -81,7 +88,7 @@ impl CompletionTrait for FuzzyCompleter {
                     .find(|c| c.display == sel)
                     .cloned();
                 if let Some(mut choice) = selected {
-                    finalize_completion(&mut choice);
+                    finalize_completion_with_context(&mut choice, quote_ctx.as_ref());
                     Ok((start, vec![choice]))
                 } else {
                     Ok((start, candidates))
@@ -133,6 +140,24 @@ fn finalize_completion(choice: &mut Pair) {
     }
 }
 
+fn finalize_completion_with_context(choice: &mut Pair, quote_ctx: Option<&QuoteContext>) {
+    if let Some(ctx) = quote_ctx {
+        finalize_completion_in_quote(choice, ctx);
+    } else {
+        finalize_completion(choice);
+    }
+}
+
+fn finalize_completion_in_quote(choice: &mut Pair, quote_ctx: &QuoteContext) {
+    let is_dir = choice.replacement.ends_with('/');
+    if is_dir {
+        return;
+    }
+    if !quote_ctx.has_closing {
+        choice.replacement.push(quote_ctx.quote);
+        choice.replacement.push(' ');
+    }
+}
 fn word_start<'a>(line: &'a str, pos: usize) -> (usize, &'a str) {
     let mut start = 0;
     for (idx, ch) in line[..pos].char_indices() {
@@ -141,6 +166,64 @@ fn word_start<'a>(line: &'a str, pos: usize) -> (usize, &'a str) {
         }
     }
     (start, &line[start..pos])
+}
+
+struct QuoteContext {
+    start: usize,
+    quote: char,
+    has_closing: bool,
+}
+
+fn quote_context(line: &str, pos: usize) -> Option<QuoteContext> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    let mut in_quote = None;
+    let mut quote_start = 0usize;
+
+    while i < pos && i < bytes.len() {
+        let ch = bytes[i];
+        if let Some(q) = in_quote {
+            if q == b'"' && ch == b'\\' && i + 1 < pos && bytes[i + 1] == b'"' {
+                i += 2;
+                continue;
+            }
+            if ch == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if ch == b'\'' || ch == b'"' {
+            in_quote = Some(ch);
+            quote_start = i;
+        }
+        i += 1;
+    }
+
+    let Some(q) = in_quote else {
+        return None;
+    };
+
+    let mut j = pos;
+    let mut has_closing = false;
+    while j < bytes.len() {
+        let ch = bytes[j];
+        if q == b'"' && ch == b'\\' && j + 1 < bytes.len() && bytes[j + 1] == b'"' {
+            j += 2;
+            continue;
+        }
+        if ch == q {
+            has_closing = true;
+            break;
+        }
+        j += 1;
+    }
+
+    Some(QuoteContext {
+        start: quote_start,
+        quote: q as char,
+        has_closing,
+    })
 }
 
 fn split_dir_query(fragment: &str) -> (String, &str) {
@@ -248,6 +331,39 @@ mod tests {
         assert_eq!(names, vec!["Alpha", "alpha", "beta"]);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quote_context_reports_open_double_quote() {
+        let line = "echo \"docs";
+        let pos = line.len();
+        let ctx = super::quote_context(line, pos).expect("expected quote context");
+
+        assert_eq!(ctx.quote, '"');
+        assert_eq!(ctx.start, 5);
+        assert!(!ctx.has_closing);
+    }
+
+    #[test]
+    fn quote_context_reports_closing_quote() {
+        let line = "echo \"docs\"";
+        let pos = line.len() - 1;
+        let ctx = super::quote_context(line, pos).expect("expected quote context");
+
+        assert_eq!(ctx.quote, '"');
+        assert_eq!(ctx.start, 5);
+        assert!(ctx.has_closing);
+    }
+
+    #[test]
+    fn quote_context_handles_single_quotes() {
+        let line = "echo 'foo bar'";
+        let pos = line.len() - 1;
+        let ctx = super::quote_context(line, pos).expect("expected quote context");
+
+        assert_eq!(ctx.quote, '\'');
+        assert_eq!(ctx.start, 5);
+        assert!(ctx.has_closing);
     }
 }
 
@@ -392,20 +508,52 @@ impl ConditionalEventHandler for CompletionEventHandler {
     }
 }
 
+struct CommentAcceptHandler;
+
+impl ConditionalEventHandler for CommentAcceptHandler {
+    fn handle(
+        &self,
+        _evt: &Event,
+        _n: RepeatCount,
+        _positive: bool,
+        ctx: &EventContext,
+    ) -> Option<Cmd> {
+        if ctx.mode() != EditMode::Vi || ctx.input_mode() != InputMode::Command {
+            return None;
+        }
+        let line = ctx.line();
+        let updated = if line.starts_with("# ") {
+            line.to_string()
+        } else {
+            format!("# {line}")
+        };
+        Some(Cmd::AcceptLineWith(updated))
+    }
+}
 impl Highlighter for ReplHelper {
     fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
         let mut out = String::with_capacity(line.len() + 16);
         let mut in_quote = None;
         let mut word = String::new();
+        let mut prev_was_space = true;
 
-        for ch in line.chars() {
+        for (idx, ch) in line.char_indices() {
             if let Some(q) = in_quote {
                 out.push(ch);
                 if ch == q {
                     out.push_str(COLOR_RESET);
                     in_quote = None;
+                    prev_was_space = false;
                 }
                 continue;
+            }
+
+            if ch == '#' && prev_was_space {
+                flush_word(&mut out, &mut word);
+                out.push_str(COLOR_COMMENT);
+                out.push_str(&line[idx..]);
+                out.push_str(COLOR_RESET);
+                return Owned(out);
             }
 
             if ch == '\'' || ch == '"' {
@@ -413,16 +561,19 @@ impl Highlighter for ReplHelper {
                 out.push_str(COLOR_STRING);
                 out.push(ch);
                 in_quote = Some(ch);
+                prev_was_space = false;
                 continue;
             }
 
             if ch.is_whitespace() {
                 flush_word(&mut out, &mut word);
                 out.push(ch);
+                prev_was_space = true;
                 continue;
             }
 
             word.push(ch);
+            prev_was_space = false;
         }
 
         flush_word(&mut out, &mut word);
@@ -520,6 +671,14 @@ fn apply_bindings(
 ) {
     let mut saw_btab = false;
     for binding in bindings {
+        if binding.action.trim() == "comment-accept" {
+            let Some(key_event) = parse_key(&binding.key) else {
+                eprintln!("unshell: repl.bind ignored invalid key '{}'", binding.key);
+                continue;
+            };
+            rl.bind_sequence(key_event, EventHandler::Conditional(Box::new(CommentAcceptHandler)));
+            continue;
+        }
         let Some(key_event) = parse_key(&binding.key) else {
             eprintln!("unshell: repl.bind ignored invalid key '{}'", binding.key);
             continue;
@@ -586,7 +745,14 @@ fn parse_key(key: &str) -> Option<KeyEvent> {
         "right" => Some(KeyEvent(KeyCode::Right, Modifiers::NONE)),
         "up" => Some(KeyEvent(KeyCode::Up, Modifiers::NONE)),
         "down" => Some(KeyEvent(KeyCode::Down, Modifiers::NONE)),
-        _ => None,
+        _ => {
+            let mut chars = key.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            Some(KeyEvent(KeyCode::Char(ch), Modifiers::NONE))
+        }
     }
 }
 

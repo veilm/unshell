@@ -97,9 +97,8 @@ git clone https://github.com/veilm/unshell
 ./unshell/install.sh
 ```
 
-if you don't need interactive usage and want to skip the
-[rustyline](https://github.com/kkawakam/rustyline) pull by cargo, you can
-install unshell without the repl:
+if for some reason you don't need interactive usage and want to skip the
+(patched) rustyline compilation, you can install unshell without the repl:
 ```bash
 ./unshell/install.sh --no-repl
 ```

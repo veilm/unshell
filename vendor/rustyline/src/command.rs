@@ -25,7 +25,11 @@ pub fn execute<H: Helper, P: Prompt + ?Sized>(
     use Status::{Proceed, Submit};
 
     match cmd {
-        Cmd::EndOfFile | Cmd::AcceptLine | Cmd::AcceptOrInsertLine { .. } | Cmd::Newline => {
+        Cmd::EndOfFile
+        | Cmd::AcceptLine
+        | Cmd::AcceptLineWith(_)
+        | Cmd::AcceptOrInsertLine { .. }
+        | Cmd::Newline => {
             if s.has_hint() || !s.is_default_prompt() || s.highlight_char {
                 // Force a refresh without hints to leave the previous
                 // line as the user typed it after a newline.
@@ -140,6 +144,13 @@ pub fn execute<H: Helper, P: Prompt + ?Sized>(
         }
         Cmd::Repaint => {
             s.refresh_line()?;
+        }
+        Cmd::AcceptLineWith(text) => {
+            s.changes.begin();
+            s.line.update(&text, text.len(), &mut s.changes);
+            s.changes.end();
+            let _ = s.validate()?;
+            return Ok(Submit);
         }
         Cmd::AcceptLine | Cmd::AcceptOrInsertLine { .. } => {
             let validation_result = s.validate()?;

@@ -22,6 +22,8 @@ pub enum Cmd {
     ///
     /// See also `AcceptOrInsertLine`
     AcceptLine,
+    /// accept-line with replacement
+    AcceptLineWith(String),
     /// beginning-of-history
     BeginningOfHistory,
     /// capitalize-word

@@ -321,6 +321,7 @@ fn page_completions<C: Candidate, H: Helper, P: Prompt + ?Sized>(
                 && cmd != Cmd::SelfInsert(1, ' ')
                 && cmd != Cmd::Kill(Movement::BackwardChar(1))
                 && cmd != Cmd::AcceptLine
+                && !matches!(cmd, Cmd::AcceptLineWith(_))
                 && cmd != Cmd::Newline
                 && !matches!(cmd, Cmd::AcceptOrInsertLine { .. })
             {
@@ -330,7 +331,7 @@ fn page_completions<C: Candidate, H: Helper, P: Prompt + ?Sized>(
                 Cmd::SelfInsert(1, 'y' | 'Y' | ' ') => {
                     pause_row += s.out.get_rows() - 1;
                 }
-                Cmd::AcceptLine | Cmd::Newline | Cmd::AcceptOrInsertLine { .. } => {
+                Cmd::AcceptLine | Cmd::AcceptLineWith(_) | Cmd::Newline | Cmd::AcceptOrInsertLine { .. } => {
                     pause_row += 1;
                 }
                 _ => break,
@@ -784,7 +785,7 @@ impl<H: Helper, I: History> Editor<H, I> {
             #[cfg(test)]
             if matches!(
                 cmd,
-                Cmd::AcceptLine | Cmd::Newline | Cmd::AcceptOrInsertLine { .. }
+                Cmd::AcceptLine | Cmd::AcceptLineWith(_) | Cmd::Newline | Cmd::AcceptOrInsertLine { .. }
             ) {
                 self.term.cursor = s.layout.cursor.col as usize;
             }

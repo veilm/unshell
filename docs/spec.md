@@ -260,7 +260,7 @@ set repl.bind btab complete
 ```
 If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
 
-**Current implementation:** `repl.mode`, `repl.bracketed_paste`, `repl.completion.command`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text), and `btab` completion starts fzf on the last match.
+**Current implementation:** `repl.mode`, `repl.bracketed_paste`, `repl.completion.command`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept), and `btab` completion starts fzf on the last match.
 
 ### Startup Sourcing
 Before sourcing any startup files, the shell sets `SHELL=ush` and `USH_MODE` (`repl` or `script`).

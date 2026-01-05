@@ -36,11 +36,13 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 The REPL passes file candidates to the completion command on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). When the command is missing or disabled, Rustyline's filename completion uses prefix matching and auto-completes when there is a single candidate.
 Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
 Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
+When completing inside quotes, the quoted fragment is used as the completion input. If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
 
 ## Highlighting
 
 - strings (`'...'` / `"..."`)
 - built-ins and control keywords (`if`, `for`, `foreach`, `set`, etc.)
+- comments starting with `#` when preceded by whitespace
 
 ## Settings (REPL-only)
 
@@ -61,6 +63,7 @@ set repl.bracketed_paste on
 set repl.bracketed_paste off
 
 set repl.bind ctrl-e end-of-line
+set repl.bind "#" comment-accept
 set repl.bind alt-f forward-word
 set repl.bind tab complete
 set repl.bind btab complete
@@ -95,6 +98,7 @@ If a function named `unshell_after_command_input` is defined, the REPL calls it 
 - `history-search-backward`
 - `history-search-forward`
 - `complete`
+- `comment-accept` (submit line with `# ` prepended when in vi normal mode)
 - `insert:TEXT` or `insert TEXT`
 
 To remove a binding:
