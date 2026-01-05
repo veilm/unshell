@@ -63,7 +63,6 @@ set repl.bracketed_paste on
 set repl.bracketed_paste off
 
 set repl.bind ctrl-e end-of-line
-set repl.bind "#" comment-accept
 set repl.bind alt-f forward-word
 set repl.bind tab complete
 set repl.bind btab complete
@@ -74,6 +73,8 @@ set repl.bind ctrl-a beginning-of-line
 set repl.bind ctrl-e end-of-line
 set repl.bind esc accept-line
 ```
+
+In vi mode, `#` defaults to `comment-accept` unless overridden by a custom binding.
 
 `set repl.history.file default` recomputes the history path using the resolution order above, even if it was already using the default path.
 

@@ -149,6 +149,7 @@ pub fn execute<H: Helper, P: Prompt + ?Sized>(
             s.changes.begin();
             s.line.update(&text, text.len(), &mut s.changes);
             s.changes.end();
+            s.refresh_line()?;
             let _ = s.validate()?;
             return Ok(Submit);
         }

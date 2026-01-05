@@ -79,4 +79,3 @@ if [ $USH_MODE = repl ]
 			printf "$term %s \n" [echo $PWD | sed "s|^.*/||"]
 
 	set repl.prompt.command draw_prompt
-	set repl.bind "#" comment-accept

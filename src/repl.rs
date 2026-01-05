@@ -670,7 +670,11 @@ fn apply_bindings(
     start_last: Arc<AtomicBool>,
 ) {
     let mut saw_btab = false;
+    let mut saw_comment_hash = false;
     for binding in bindings {
+        if binding.key.trim() == "#" {
+            saw_comment_hash = true;
+        }
         if binding.action.trim() == "comment-accept" {
             let Some(key_event) = parse_key(&binding.key) else {
                 eprintln!("unshell: repl.bind ignored invalid key '{}'", binding.key);
@@ -708,6 +712,12 @@ fn apply_bindings(
         rl.bind_sequence(
             KeyEvent(KeyCode::BackTab, Modifiers::NONE),
             EventHandler::Conditional(Box::new(handler)),
+        );
+    }
+    if !saw_comment_hash {
+        rl.bind_sequence(
+            KeyEvent(KeyCode::Char('#'), Modifiers::NONE),
+            EventHandler::Conditional(Box::new(CommentAcceptHandler)),
         );
     }
 }
