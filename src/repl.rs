@@ -177,7 +177,11 @@ fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
         }
     }
 
-    entries.sort_by(|a, b| a.display.cmp(&b.display));
+    entries.sort_by(|a, b| {
+        let a_lower = a.display.to_ascii_lowercase();
+        let b_lower = b.display.to_ascii_lowercase();
+        a_lower.cmp(&b_lower).then_with(|| a.display.cmp(&b.display))
+    });
     entries
 }
 
@@ -225,6 +229,23 @@ mod tests {
         let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
 
         assert_eq!(names, vec![".hidden", "alpha"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_candidates_sorts_case_insensitive() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("beta"), b"").unwrap();
+        fs::write(dir.join("Alpha"), b"").unwrap();
+        fs::write(dir.join("alpha"), b"").unwrap();
+
+        let dir_prefix = format!("{}/", dir.display());
+        let candidates = list_dir_candidates(&dir_prefix, false);
+        let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
+
+        assert_eq!(names, vec!["Alpha", "alpha", "beta"]);
 
         let _ = fs::remove_dir_all(&dir);
     }
