@@ -441,9 +441,10 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
                     disable_fzf_option(&option);
                     continue;
                 }
-                if !err.trim().is_empty() {
+                let summary = summarize_fzf_error(&err);
+                if !summary.is_empty() {
                     eprintln!(
-                        "unshell: fzf failed; your version may be too old. unknown fzf error: {err}"
+                        "unshell: fzf failed; your version may be too old. unknown fzf error: {summary}"
                     );
                 }
                 return FuzzyOutcome::Unavailable;
@@ -482,10 +483,18 @@ fn fzf_option_disabled(option: &str) -> bool {
 }
 
 fn parse_unknown_option(stderr: &str) -> Option<String> {
+    const PREFIX: &str = "unknown option:";
     for line in stderr.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("unknown option: ") {
-            return Some(rest.trim().to_string());
+        if let Some(rest) = trimmed.strip_prefix(PREFIX) {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                continue;
+            }
+            let token = rest.split_whitespace().next().unwrap_or("");
+            if token.starts_with('-') {
+                return Some(token.to_string());
+            }
         }
     }
     None
@@ -545,6 +554,16 @@ fn fzf_args() -> Vec<&'static str> {
         }
     }
     args
+}
+
+fn summarize_fzf_error(stderr: &str) -> String {
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    String::new()
 }
 
 struct CursorGuard;
