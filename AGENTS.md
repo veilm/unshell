@@ -19,3 +19,8 @@
 ## Spec Maintenance Checklist
 - Add new features/requirements with examples.
 - Append unresolved questions to the “Ambiguities / Open Questions” list if they arise during development.
+
+## Related repos available for reference, if relevant
+- ~/src/tmux/
+- ~/src/rustyline/
+- ~/src/yash/

@@ -14,3 +14,6 @@ rustyline = { version = "17.0.1", optional = true, features = ["derive", "custom
 [features]
 default = ["repl"]
 repl = ["dep:rustyline"]
+
+[patch.crates-io]
+rustyline = { path = "vendor/rustyline" }

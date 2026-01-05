@@ -4,7 +4,7 @@ use crate::edit::State;
 use crate::error;
 use crate::highlight::CmdKind;
 use crate::history::SearchDirection;
-use crate::keymap::{Anchor, At, Cmd, Movement, Word};
+use crate::keymap::{Anchor, At, Cmd, InputMode, Movement, Word};
 use crate::keymap::{InputState, Refresher};
 use crate::kill_ring::{KillRing, Mode};
 use crate::line_buffer::WordAction;
@@ -91,19 +91,31 @@ pub fn execute<H: Helper, P: Prompt + ?Sized>(
         Cmd::NextHistory => {
             // Fetch the next command from the history list.
             s.edit_history_next(false)?;
+            if !input_state.is_emacs_mode() && input_state.input_mode == InputMode::Command {
+                s.edit_move_home()?;
+            }
         }
         Cmd::PreviousHistory => {
             // Fetch the previous command from the history list.
             s.edit_history_next(true)?;
+            if !input_state.is_emacs_mode() && input_state.input_mode == InputMode::Command {
+                s.edit_move_home()?;
+            }
         }
         Cmd::LineUpOrPreviousHistory(n) => {
             if !s.edit_move_line_up(n)? {
                 s.edit_history_next(true)?;
+                if !input_state.is_emacs_mode() && input_state.input_mode == InputMode::Command {
+                    s.edit_move_home()?;
+                }
             }
         }
         Cmd::LineDownOrNextHistory(n) => {
             if !s.edit_move_line_down(n)? {
                 s.edit_history_next(false)?;
+                if !input_state.is_emacs_mode() && input_state.input_mode == InputMode::Command {
+                    s.edit_move_home()?;
+                }
             }
         }
         Cmd::HistorySearchBackward => s.edit_history_search(SearchDirection::Reverse)?,
