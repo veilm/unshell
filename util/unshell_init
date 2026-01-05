@@ -38,10 +38,10 @@ if [ -f $handler ]
 	set expansions.handler $handler
 
 if [ $USH_MODE = repl ]
-	echo "unshell: You're using the default /etc/unshell/init!"
-	echo "unshell: To change startup behaviour, edit this file or see docs/repl.md."
+	echo "[unshell] You're using the default /etc/unshell/init!"
+	echo "[unshell] To change startup behaviour, edit this file or see docs/repl.md."
 
-	alias ls "env ls --color=auto"
+	alias ls "env ls -G --color=auto"
 	alias ll "ls -lh"
 	alias la "ls -A"
 

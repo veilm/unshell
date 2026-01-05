@@ -3,6 +3,7 @@ use std::env;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -387,76 +388,163 @@ enum FuzzyOutcome {
 }
 
 fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome {
-    let mut cmd = Command::new("fzf");
-    cmd.arg("--height")
-        .arg("40%")
-        .arg("--margin")
-        .arg("0")
-        .arg("--gutter")
-        .arg(" ")
-        .arg("--color")
-        .arg("16")
-        .arg("--cycle")
-        .arg("--no-scrollbar")
-        .arg("--color")
-        .arg("bg+:-1")
-        .arg("--no-info")
-        .arg("--no-separator")
-        .arg("--reverse")
-        .arg("-1") // select only option if only 1 is given
-        .arg("--prompt")
-        .arg("> ")
-        .arg("--exit-0")
-        .arg("--print-query")
-        .arg("--bind")
-        .arg("tab:down,btab:up,alt-k:up,alt-j:down,alt-o:toggle-sort,ctrl-o:toggle-sort,ctrl-j:down,ctrl-k:up")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    if !query.is_empty() {
-        cmd.arg("--query").arg(query);
-    }
-    if start_last {
-        cmd.arg("--bind").arg("load:last");
-    }
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        if attempts > 5 {
+            return FuzzyOutcome::Unavailable;
+        }
 
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(_) => return FuzzyOutcome::Unavailable,
-    };
-    let _ = set_cursor_visible(false);
-    let _ = move_cursor_to_eol();
-    let _cursor_guard = CursorGuard;
+        let args = fzf_args();
+        let mut cmd = Command::new("fzf");
+        cmd.args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if !query.is_empty() {
+            cmd.arg("--query").arg(query);
+        }
+        if start_last && !fzf_option_disabled("load:last") {
+            cmd.arg("--bind").arg("load:last");
+        }
 
-    {
-        let stdin = match child.stdin.as_mut() {
-            Some(stdin) => stdin,
-            None => return FuzzyOutcome::Unavailable,
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(_) => return FuzzyOutcome::Unavailable,
         };
-        for choice in choices {
-            let _ = writeln!(stdin, "{choice}");
+        let _ = set_cursor_visible(false);
+        let _ = move_cursor_to_eol();
+        let _cursor_guard = CursorGuard;
+
+        {
+            let stdin = match child.stdin.as_mut() {
+                Some(stdin) => stdin,
+                None => return FuzzyOutcome::Unavailable,
+            };
+            for choice in choices {
+                let _ = writeln!(stdin, "{choice}");
+            }
+        }
+
+        let output = match child.wait_with_output() {
+            Ok(output) => output,
+            Err(_) => return FuzzyOutcome::Unavailable,
+        };
+
+        if let Some(code) = output.status.code() {
+            if code == 130 {
+                return FuzzyOutcome::Cancelled;
+            }
+            if code == 1 || code == 2 {
+                let err = String::from_utf8_lossy(&output.stderr);
+                if let Some(option) = parse_unknown_option(&err) {
+                    disable_fzf_option(&option);
+                    continue;
+                }
+                if !err.trim().is_empty() {
+                    eprintln!(
+                        "unshell: fzf failed; your version may be too old. unknown fzf error: {err}"
+                    );
+                }
+                return FuzzyOutcome::Unavailable;
+            }
+        }
+
+        if output.stdout.is_empty() {
+            return FuzzyOutcome::Cancelled;
+        }
+
+        let output_text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = output_text.lines();
+        let _query_line = lines.next();
+        let selected = lines.next().unwrap_or("").trim().to_string();
+
+        if selected.is_empty() {
+            return FuzzyOutcome::Cancelled;
+        }
+        return FuzzyOutcome::Selected(selected);
+    }
+}
+
+fn fzf_disabled_options() -> &'static Mutex<std::collections::HashSet<String>> {
+    static OPTIONS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    OPTIONS.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+fn disable_fzf_option(option: &str) {
+    let mut guard = fzf_disabled_options().lock().unwrap();
+    guard.insert(option.to_string());
+}
+
+fn fzf_option_disabled(option: &str) -> bool {
+    let guard = fzf_disabled_options().lock().unwrap();
+    guard.contains(option)
+}
+
+fn parse_unknown_option(stderr: &str) -> Option<String> {
+    for line in stderr.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("unknown option: ") {
+            return Some(rest.trim().to_string());
         }
     }
+    None
+}
 
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => return FuzzyOutcome::Unavailable,
-    };
-
-    if output.stdout.is_empty() {
-        return FuzzyOutcome::Cancelled;
+fn fzf_args() -> Vec<&'static str> {
+    let mut args = Vec::new();
+    let opts = [
+        "--height",
+        "40%",
+        "--margin",
+        "0",
+        "--gutter",
+        " ",
+        "--color",
+        "16",
+        "--cycle",
+        "--no-scrollbar",
+        "--color",
+        "bg+:-1",
+        "--no-info",
+        "--no-separator",
+        "--reverse",
+        "-1",
+        "--prompt",
+        "> ",
+        "--exit-0",
+        "--print-query",
+        "--bind",
+        "tab:down,btab:up,alt-k:up,alt-j:down,alt-o:toggle-sort,ctrl-o:toggle-sort,ctrl-j:down,ctrl-k:up",
+    ];
+    let mut i = 0;
+    while i < opts.len() {
+        let opt = opts[i];
+        if opt.starts_with('-') {
+            if fzf_option_disabled(opt) {
+                i += 1;
+                continue;
+            }
+            args.push(opt);
+            if i + 1 < opts.len() && !opts[i + 1].starts_with('-') {
+                let val = opts[i + 1];
+                if fzf_option_disabled(val) {
+                    i += 2;
+                    continue;
+                }
+                args.push(val);
+                i += 2;
+                continue;
+            }
+            i += 1;
+        } else {
+            if !fzf_option_disabled(opt) {
+                args.push(opt);
+            }
+            i += 1;
+        }
     }
-
-    let output_text = String::from_utf8_lossy(&output.stdout);
-    let mut lines = output_text.lines();
-    let _query_line = lines.next();
-    let selected = lines.next().unwrap_or("").trim().to_string();
-
-    if selected.is_empty() {
-        FuzzyOutcome::Cancelled
-    } else {
-        FuzzyOutcome::Selected(selected)
-    }
+    args
 }
 
 struct CursorGuard;
