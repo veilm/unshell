@@ -53,7 +53,8 @@ impl CompletionTrait for FuzzyCompleter {
 
         let (start, fragment) = word_start(line, pos);
         let (dir_prefix, query) = split_dir_query(fragment);
-        let candidates = list_dir_candidates(&dir_prefix, ctx);
+        let include_hidden = fragment.starts_with('.') || fragment.contains("/.");
+        let candidates = list_dir_candidates(&dir_prefix, include_hidden);
         if candidates.is_empty() {
             return Ok((start, candidates));
         }
@@ -152,7 +153,7 @@ fn split_dir_query(fragment: &str) -> (String, &str) {
     }
 }
 
-fn list_dir_candidates(dir_prefix: &str, _ctx: &Context<'_>) -> Vec<Pair> {
+fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
     let dir_path = resolve_dir(dir_prefix);
     let mut entries = Vec::new();
 
@@ -162,6 +163,9 @@ fn list_dir_candidates(dir_prefix: &str, _ctx: &Context<'_>) -> Vec<Pair> {
 
     for entry in read_dir.flatten() {
         if let Some(name) = entry.file_name().to_str() {
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
             let mut replacement = format!("{dir_prefix}{name}");
             if entry.path().is_dir() {
                 replacement.push('/');
@@ -175,6 +179,55 @@ fn list_dir_candidates(dir_prefix: &str, _ctx: &Context<'_>) -> Vec<Pair> {
 
     entries.sort_by(|a, b| a.display.cmp(&b.display));
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::list_dir_candidates;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir() -> PathBuf {
+        let base = std::env::temp_dir();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        base.join(format!("unshell-repl-{nanos}"))
+    }
+
+    #[test]
+    fn list_candidates_hides_dotfiles_by_default() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha"), b"").unwrap();
+        fs::write(dir.join(".hidden"), b"").unwrap();
+
+        let dir_prefix = format!("{}/", dir.display());
+        let candidates = list_dir_candidates(&dir_prefix, false);
+        let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
+
+        assert_eq!(names, vec!["alpha"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_candidates_includes_dotfiles_when_requested() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("alpha"), b"").unwrap();
+        fs::write(dir.join(".hidden"), b"").unwrap();
+
+        let dir_prefix = format!("{}/", dir.display());
+        let candidates = list_dir_candidates(&dir_prefix, true);
+        let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
+
+        assert_eq!(names, vec![".hidden", "alpha"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
 
 fn resolve_dir(dir_prefix: &str) -> std::path::PathBuf {

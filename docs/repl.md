@@ -35,6 +35,7 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 
 The REPL passes file candidates to the completion command on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). When the command is missing or disabled, Rustyline's filename completion uses prefix matching and auto-completes when there is a single candidate.
 Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
+Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
 
 ## Highlighting
 
