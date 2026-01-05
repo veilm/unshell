@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use rustyline::completion::{Completer as CompletionTrait, FilenameCompleter, Pair};
+use rustyline::completion::{Completer as CompletionTrait, Pair};
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -18,7 +18,7 @@ use rustyline::{
     Movement, RepeatCount, Result, Validator, Word,
 };
 
-use crate::state::{ReplBinding, ShellState};
+use crate::state::{ReplBinding, ReplCompletionMode, ShellState};
 use crate::term::cursor_column;
 use crate::{build_prompt, process_line, run_named_function, RunResult, DEFAULT_PROMPT};
 
@@ -32,11 +32,9 @@ const KEYWORDS: &[&str] = &[
     "set", "unalias",
 ];
 
-#[derive(Default)]
 struct FuzzyCompleter {
-    command: Vec<String>,
-    fallback: FilenameCompleter,
     start_last: Arc<AtomicBool>,
+    mode: ReplCompletionMode,
 }
 
 impl CompletionTrait for FuzzyCompleter {
@@ -46,10 +44,10 @@ impl CompletionTrait for FuzzyCompleter {
         &self,
         line: &str,
         pos: usize,
-        ctx: &Context<'_>,
+        _ctx: &Context<'_>,
     ) -> Result<(usize, Vec<Self::Candidate>)> {
-        if self.command.is_empty() {
-            return self.fallback.complete(line, pos, ctx);
+        if matches!(self.mode, ReplCompletionMode::Off) {
+            return Ok((pos, Vec::new()));
         }
 
         let quote_ctx = quote_context(line, pos);
@@ -79,9 +77,13 @@ impl CompletionTrait for FuzzyCompleter {
             }
         }
 
+        if matches!(self.mode, ReplCompletionMode::List) {
+            return Ok((start, candidates));
+        }
+
         let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
         let start_last = self.start_last.swap(false, Ordering::SeqCst);
-        match run_fuzzy(&self.command, &choices, query, start_last) {
+        match run_fuzzy(&choices, query, start_last) {
             FuzzyOutcome::Selected(sel) => {
                 let selected = candidates
                     .iter()
@@ -101,7 +103,7 @@ impl CompletionTrait for FuzzyCompleter {
                     replacement: fragment.to_string(),
                 }],
             )),
-            FuzzyOutcome::Unavailable => self.fallback.complete(line, pos, ctx),
+            FuzzyOutcome::Unavailable => Ok((start, candidates)),
         }
     }
 
@@ -384,11 +386,8 @@ enum FuzzyOutcome {
     Unavailable,
 }
 
-fn run_fuzzy(command: &[String], choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome {
-    let mut cmd = Command::new(&command[0]);
-    if command.len() > 1 {
-        cmd.args(&command[1..]);
-    }
+fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome {
+    let mut cmd = Command::new("fzf");
     cmd.arg("--height")
         .arg("40%")
         .arg("--margin")
@@ -650,9 +649,8 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
     let start_last = Arc::new(AtomicBool::new(false));
     let helper = ReplHelper {
         completer: FuzzyCompleter {
-            command: state.repl.completion_command.clone(),
-            fallback: FilenameCompleter::new(),
             start_last: start_last.clone(),
+            mode: state.repl.completion_mode,
         },
     };
 

@@ -28,12 +28,13 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 
 ## Completion
 
-- default: `fzf` if present, Rustyline filename completion otherwise
-- disable completion command: `set repl.completion.command off`
-- custom completion command: `set repl.completion.command fzf` or `set repl.completion.command skim`
+- default: `fzf` if present, list completion otherwise
+- list completion: `set repl.completion.mode list`
+- disable completion: `set repl.completion.mode off`
+- use fzf: `set repl.completion.mode fzf`
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
-The REPL passes file candidates to the completion command on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). When the command is missing or disabled, Rustyline's filename completion uses prefix matching and auto-completes when there is a single candidate.
+The REPL passes file candidates to `fzf` on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). List mode uses prefix matching and auto-completes when there is a single candidate.
 Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
 Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
 When completing inside quotes, the quoted fragment is used as the completion input. If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
@@ -50,8 +51,9 @@ When completing inside quotes, the quoted fragment is used as the completion inp
 set repl.mode vi
 set repl.mode emacs
 
-set repl.completion.command fzf
-set repl.completion.command off
+set repl.completion.mode fzf
+set repl.completion.mode list
+set repl.completion.mode off
 
 set repl.history.file default
 set repl.history.file /tmp/ush-history

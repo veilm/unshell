@@ -36,10 +36,17 @@ pub struct ReplBinding {
     pub action: String,
 }
 
+#[derive(Clone, Copy)]
+pub enum ReplCompletionMode {
+    Fzf,
+    List,
+    Off,
+}
+
 #[derive(Clone)]
 pub struct ReplOptions {
     pub vi_mode: bool,
-    pub completion_command: Vec<String>,
+    pub completion_mode: ReplCompletionMode,
     pub prompt_command: Option<String>,
     pub bindings: Vec<ReplBinding>,
     pub bracketed_paste: bool,
@@ -77,7 +84,7 @@ impl ShellState {
             },
             repl: ReplOptions {
                 vi_mode: true,
-                completion_command: vec!["fzf".to_string()],
+                completion_mode: ReplCompletionMode::Fzf,
                 prompt_command: None,
                 bindings: Vec::new(),
                 bracketed_paste: false,
