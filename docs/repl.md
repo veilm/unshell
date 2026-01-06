@@ -34,7 +34,7 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 - use fzf: `set repl.completion.mode fzf`
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
-The REPL passes file candidates to `fzf` on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). List mode uses prefix matching and auto-completes when there is a single candidate.
+The REPL passes file candidates to `fzf` on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). List mode uses prefix matching and auto-completes when there is a single candidate. If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
 Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
 Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
 When completing inside quotes, the quoted fragment is used as the completion input. If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.

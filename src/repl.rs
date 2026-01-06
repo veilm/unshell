@@ -369,6 +369,15 @@ mod tests {
         assert_eq!(ctx.start, 5);
         assert!(ctx.has_closing);
     }
+
+    #[test]
+    fn parse_unknown_option_extracts_flag() {
+        let stderr = "unknown option: --no-scrollbar\n";
+        assert_eq!(
+            super::parse_unknown_option(stderr),
+            Some("--no-scrollbar".to_string())
+        );
+    }
 }
 
 fn resolve_dir(dir_prefix: &str) -> std::path::PathBuf {
@@ -405,7 +414,10 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
             if code == 130 {
                 return FuzzyOutcome::Cancelled;
             }
-            if code == 1 || code == 2 {
+            if code == 1 {
+                return FuzzyOutcome::Cancelled;
+            }
+            if code == 2 {
                 let err = String::from_utf8_lossy(&output.stderr);
                 if let Some(option) = parse_unknown_option(&err) {
                     disable_fzf_option(&option);
@@ -456,9 +468,9 @@ fn run_fzf_once(
     }
 
     let mut child = cmd.spawn()?;
-    let _ = set_cursor_visible(false);
+    let saved_column = cursor_column();
+    let _cursor_guard = CursorGuard::new(saved_column);
     let _ = move_cursor_to_eol();
-    let _cursor_guard = CursorGuard;
 
     {
         let stdin = child.stdin.as_mut().ok_or_else(|| {
@@ -598,12 +610,30 @@ fn format_fzf_args(args: &[&str]) -> String {
     out.join(" ")
 }
 
-struct CursorGuard;
+struct CursorGuard {
+    column: Option<u16>,
+}
+
+impl CursorGuard {
+    fn new(column: Option<u16>) -> Self {
+        let _ = set_cursor_visible(false);
+        Self { column }
+    }
+}
 
 impl Drop for CursorGuard {
     fn drop(&mut self) {
         let _ = set_cursor_visible(true);
+        if let Some(column) = self.column {
+            let _ = move_cursor_to_column(column);
+        }
     }
+}
+
+fn move_cursor_to_column(column: u16) -> std::io::Result<()> {
+    let mut stdout = std::io::stdout();
+    write!(stdout, "\x1b[{column}G")?;
+    stdout.flush()
 }
 
 fn move_cursor_to_eol() -> std::io::Result<()> {
