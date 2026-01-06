@@ -179,7 +179,7 @@ ls -1 | foreach file
     echo $file
 | grep ".txt"
 ```
-**Current implementation:** brace or tab-indented `cmd | foreach name` blocks execute in a child process and can appear mid-pipeline; each line of upstream stdout is bound to `name`.
+**Current implementation:** brace or tab-indented `cmd | foreach name` blocks execute in a child process and can appear mid-pipeline; each line of upstream stdout is bound to `name`. If a line uses the spread operator (`...`) and expands to `foreach`, it must use inline braces.
 
 ### External Expansion Handlers
 Globs, brace expansion, or other sigils are delegated to a single user-space helper configured via `set`. Callers enable the characters that should trigger expansion (`set expansions.characters "@" on`, `set expansions.characters "{" on`, etc.), then point the shell at the handler binary and its fixed leading arguments (`set expansions.handler foo bar baz`). When the parser sees any unescaped, unquoted token containing a registered character, it invokes the handler as `foo bar baz <token>` and expects a JSON array of replacement arguments. The helper is responsible for parsing mixed syntax (e.g., both `@` and `{}` inside one token) and deciding how to expand it. This keeps the core small while letting users swap expansion strategies without recompiling the shell.
