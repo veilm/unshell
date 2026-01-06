@@ -261,7 +261,7 @@ set repl.bind btab complete
 ```
 If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
 
-**Current implementation:** `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session; `repl.completion.mode` accepts `fzf`, `list`, or `off`; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept), and `btab` completion starts fzf on the last match.
+**Current implementation:** `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session; `repl.completion.mode` accepts `fzf`, `list`, or `off`; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept), and `btab` completion starts fzf on the last match. `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.
 
 ### Startup Sourcing
 Before sourcing any startup files, the shell sets `SHELL=ush` and `USH_MODE` (`repl` or `script`).
@@ -284,3 +284,4 @@ ush --rc /path/to/init  # only source this file
 ## Ambiguities / Open Questions
 - **Error handling mode:** Should non-zero exit codes inside pipelines or blocks abort the script (akin to `set -e`) or only fail the current step?
 - **Else/loop semantics:** What syntax/behavior should `else`, `elif`, `for`, and `foreach` follow (indentation vs braces priorities, variable scoping, etc.)?
+- **REPL completion testing:** Do we want a harness for automated REPL completion behavior (fzf/list modes), or accept unit-level coverage only?
