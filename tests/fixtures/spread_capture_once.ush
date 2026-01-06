@@ -1,0 +1,5 @@
+def marker
+	echo marker out>err
+	echo file1
+
+echo ...[marker]

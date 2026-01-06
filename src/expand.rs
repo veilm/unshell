@@ -80,6 +80,18 @@ fn expand_tokens_with_meta_inner(
     let mut brace_depth = 0usize;
 
     for token in tokens {
+        if from_spread
+            && token.starts_with('{')
+            && token.ends_with('}')
+            && token.chars().any(|ch| ch.is_whitespace())
+        {
+            expanded.push(ExpandedToken {
+                value: token,
+                protected: true,
+                allow_split: false,
+            });
+            continue;
+        }
         if from_spread {
             if token == "}" && brace_depth > 0 {
                 expanded.push(ExpandedToken {
