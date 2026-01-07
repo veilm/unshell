@@ -62,7 +62,7 @@ echo "literal # inside quotes"
 ```
 
 ### Atomic Variables & Assignment
-`$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion. **Current implementation:** leading `name=value` tokens set shell-local variables (no command runs if only assignments are present), `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
+`$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion. **Current implementation:** leading `name=value` tokens set shell-local variables (no command runs if only assignments are present); when a command is external, those leading assignments are passed as environment overrides and do not persist in the shell; `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
 ```bash
 path="My Projects/unshell"
 cd $path          # treated as one argument
