@@ -214,9 +214,9 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
     }
     let alias_count = read_u32(&mut file)?;
     for _ in 0..alias_count {
-        let global = read_bool(&mut file)?;
         let name = read_string(&mut file, "alias name")?;
         let value = read_string(&mut file, "alias value")?;
+        let global = read_bool(&mut file)?;
         state.set_alias(&name, value, global);
     }
     state.options.aliases_recursive = read_bool(&mut file)?;
@@ -366,7 +366,7 @@ pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFi
             write_bool(&mut file, false)?;
         }
     }
-    write_u32(&mut file, state.repl.generation)?;
+    write_u64(&mut file, state.repl.generation)?;
     write_bool(&mut file, state.last_output_newline)?;
     write_bool(&mut file, state.needs_cursor_check)?;
     file.flush()?;
@@ -483,7 +483,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
     if has_history {
         state.repl.history_file = Some(read_string(&mut file, "repl history")?);
     }
-    state.repl.generation = read_u32(&mut file)?;
+    state.repl.generation = read_u64(&mut file)?;
     state.last_output_newline = read_bool(&mut file)?;
     state.needs_cursor_check = read_bool(&mut file)?;
 
@@ -539,6 +539,16 @@ fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
     Ok(u32::from_le_bytes(buf))
+}
+
+fn write_u64<W: Write>(writer: &mut W, value: u64) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
 }
 
 fn write_bool<W: Write>(writer: &mut W, value: bool) -> io::Result<()> {

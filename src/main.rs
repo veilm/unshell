@@ -35,6 +35,7 @@ use crate::term::cursor_column;
 
 pub(crate) const DEFAULT_PROMPT: &str = "unshell> ";
 const FUNCTION_MAX_DEPTH: usize = 64;
+const REFRESH_NOTICE_ENV: &str = "USH_REFRESH_NOTICE";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -80,6 +81,23 @@ fn main() {
         }
     };
 
+    if let Some(path) = startup.restore_path.as_deref() {
+        if script.is_some() {
+            eprintln!("unshell: --restore is only supported in repl mode");
+            std::process::exit(1);
+        }
+        let state = match read_shell_state_file(Path::new(path)) {
+            Ok(state) => state,
+            Err(err) => {
+                eprintln!("unshell: failed to read restore state: {err}");
+                std::process::exit(1);
+            }
+        };
+        let _ = std::fs::remove_file(path);
+        run_repl_with_state(&startup, state);
+        return;
+    }
+
     if let Some(script) = script {
         let mut state = ShellState::new();
         init_shell_state(&mut state, "script");
@@ -105,7 +123,11 @@ fn main() {
 
 #[cfg(feature = "repl")]
 fn run_repl(startup: &StartupConfig) {
-    let mut state = ShellState::new();
+    run_repl_with_state(startup, ShellState::new());
+}
+
+#[cfg(feature = "repl")]
+fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
     init_shell_state(&mut state, "repl");
     match load_startup(&mut state, startup) {
         Ok(FlowControl::None) => {}
@@ -115,14 +137,19 @@ fn run_repl(startup: &StartupConfig) {
         }
         Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
+    maybe_print_refresh_notice(&mut state);
     repl::run_repl(&mut state);
 }
 
 #[cfg(not(feature = "repl"))]
 fn run_repl(startup: &StartupConfig) {
+    run_repl_with_state(startup, ShellState::new());
+}
+
+#[cfg(not(feature = "repl"))]
+fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
-    let mut state = ShellState::new();
 
     init_shell_state(&mut state, "repl");
     match load_startup(&mut state, startup) {
@@ -133,6 +160,7 @@ fn run_repl(startup: &StartupConfig) {
         }
         Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
+    maybe_print_refresh_notice(&mut state);
     println!("unshell: compiled without rustyline repl; using minimal input (no line editing or completion)");
 
     loop {
@@ -193,6 +221,7 @@ fn maybe_print_incomplete_marker(
 struct StartupConfig {
     no_rc: bool,
     rc_path: Option<String>,
+    restore_path: Option<String>,
 }
 
 fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>, Vec<String>), String> {
@@ -206,6 +235,13 @@ fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>,
         if arg == "--norc" {
             config.no_rc = true;
             idx += 1;
+            continue;
+        }
+        if arg == "--restore" {
+            let value = args.get(idx + 1).ok_or("--restore requires a path")?;
+            config.restore_path = Some(value.clone());
+            config.no_rc = true;
+            idx += 2;
             continue;
         }
         if arg == "--rc" {
@@ -236,6 +272,21 @@ fn init_shell_state(state: &mut ShellState, mode: &str) {
     state.interactive = mode == "repl";
     state.last_output_newline = true;
     state.needs_cursor_check = false;
+}
+
+fn maybe_print_refresh_notice(state: &mut ShellState) {
+    let notice = match env::var(REFRESH_NOTICE_ENV) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    unsafe {
+        env::remove_var(REFRESH_NOTICE_ENV);
+    }
+    if notice.trim().is_empty() {
+        return;
+    }
+    println!("unshell: {notice}");
+    state.last_output_newline = true;
 }
 
 fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
@@ -321,6 +372,69 @@ pub(crate) fn build_prompt(state: &mut ShellState) -> String {
             }
         },
     }
+}
+
+#[cfg(feature = "repl")]
+pub(crate) fn maybe_auto_refresh_repl(state: &mut ShellState) -> Result<(), String> {
+    if !state.interactive {
+        return Ok(());
+    }
+    if !self_exe_missing() {
+        return Ok(());
+    }
+    refresh_repl_inner(state, "new binary detected; refreshed repl")
+}
+
+#[cfg(feature = "repl")]
+fn refresh_repl_inner(state: &mut ShellState, notice: &str) -> Result<(), String> {
+    let (state_path, _guard) = write_shell_state_file(state)
+        .map_err(|err| format!("failed to write refresh state: {err}"))?;
+    let mut cmd = build_refresh_command()?;
+    if !notice.trim().is_empty() {
+        unsafe {
+            env::set_var(REFRESH_NOTICE_ENV, notice);
+        }
+    }
+    cmd.arg("--restore").arg(&state_path);
+    let err = cmd.exec();
+    Err(format!("failed to exec refreshed repl: {err}"))
+}
+
+#[cfg(feature = "repl")]
+fn self_exe_missing() -> bool {
+    match env::current_exe() {
+        Ok(path) => {
+            if !path.exists() {
+                return true;
+            }
+            let text = path.to_string_lossy();
+            text.ends_with(" (deleted)")
+        }
+        Err(_) => true,
+    }
+}
+
+#[cfg(feature = "repl")]
+fn build_refresh_command() -> Result<Command, String> {
+    if let Ok(path) = env::var("USH_REEXEC_EXE") {
+        if !path.trim().is_empty() {
+            return Ok(Command::new(path));
+        }
+    }
+    if let Some(arg0) = env::args().next() {
+        if arg0.contains('/') {
+            let path = Path::new(&arg0);
+            if path.exists() {
+                return Ok(Command::new(path));
+            }
+        }
+    }
+    if let Ok(path) = env::current_exe() {
+        if path.exists() && !path.to_string_lossy().ends_with(" (deleted)") {
+            return Ok(Command::new(path));
+        }
+    }
+    Ok(Command::new("ush"))
 }
 
 #[cfg(feature = "repl")]
@@ -1395,6 +1509,7 @@ fn is_builtin(name: &str) -> bool {
             | "builtin"
             | "source"
             | "eval"
+            | "refresh-repl"
     )
 }
 
@@ -1702,6 +1817,20 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
             match run_builtin(&inner, state)? {
                 Some(result) => Ok(Some(result)),
                 None => Err(format!("builtin: unknown builtin '{target}'")),
+            }
+        }
+        "refresh-repl" => {
+            if !state.interactive {
+                return Err("refresh-repl: only supported in repl".into());
+            }
+            #[cfg(feature = "repl")]
+            {
+                refresh_repl_inner(state, "refreshed repl")?;
+                Ok(Some(RunResult::Success(true)))
+            }
+            #[cfg(not(feature = "repl"))]
+            {
+                Err("refresh-repl: repl support not available".into())
             }
         }
         "return" => {
