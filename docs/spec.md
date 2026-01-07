@@ -194,7 +194,7 @@ echo foo@bar{.txt,.log}
 # -> shell calls: ush-expand --mode glob "foo@bar{.txt,.log}"
 # -> handler prints JSON array such as ["foo@bar.txt","foo@bar.log"]
 ```
-**Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of UTF-8 strings to splice into the argument list (avoid `\\u` escapes); handler failures or invalid JSON abort the command.
+**Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of UTF-8 strings to splice into the argument list (`\\u` escapes are supported); handler failures or invalid JSON abort the command.
 
 ### External String & Quoting Utilities
 Utilities such as `s` (string transforms) and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries. `quote`'s contract: read stdin, treat each line as a record, emit a space-separated list where each record is wrapped in quotes and internal quotes/backslashes are escaped so `...` can safely re-tokenize the output. Additional helpers (like a configurable-delimiter `split`) can exist in user space, but the shell core remains agnostic.

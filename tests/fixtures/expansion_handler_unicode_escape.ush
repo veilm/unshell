@@ -1,0 +1,4 @@
+set expansions.characters "*" on
+set expansions.handler python3 -c 'import sys; sys.stdout.write("[\"\\u3089\\u304f\\u3044\\u3061\"]")'
+
+echo *

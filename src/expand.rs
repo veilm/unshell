@@ -710,6 +710,35 @@ fn parse_json_string<I: Iterator<Item = char>>(
                     'r' => result.push('\r'),
                     'b' => result.push('\u{0008}'),
                     'f' => result.push('\u{000C}'),
+                    'u' => {
+                        let code = parse_json_unicode_escape(chars)?;
+                        if (0xD800..=0xDBFF).contains(&code) {
+                            let next = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                            if next != '\\' {
+                                return Err("invalid json escape".into());
+                            }
+                            let next = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                            if next != 'u' {
+                                return Err("invalid json escape".into());
+                            }
+                            let low = parse_json_unicode_escape(chars)?;
+                            if !(0xDC00..=0xDFFF).contains(&low) {
+                                return Err("invalid json escape".into());
+                            }
+                            let combined = 0x10000
+                                + (((code as u32) - 0xD800) << 10)
+                                + ((low as u32) - 0xDC00);
+                            let ch = char::from_u32(combined)
+                                .ok_or_else(|| "invalid json escape".to_string())?;
+                            result.push(ch);
+                        } else if (0xDC00..=0xDFFF).contains(&code) {
+                            return Err("invalid json escape".into());
+                        } else {
+                            let ch = char::from_u32(code as u32)
+                                .ok_or_else(|| "invalid json escape".to_string())?;
+                            result.push(ch);
+                        }
+                    }
                     _ => return Err("unsupported json escape".into()),
                 }
             }
@@ -717,4 +746,41 @@ fn parse_json_string<I: Iterator<Item = char>>(
         }
     }
     Err("unterminated json string".into())
+}
+
+fn parse_json_unicode_escape<I: Iterator<Item = char>>(
+    chars: &mut std::iter::Peekable<I>,
+) -> Result<u16, String> {
+    let mut value: u16 = 0;
+    for _ in 0..4 {
+        let ch = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+        let digit = ch.to_digit(16).ok_or_else(|| "invalid json escape".to_string())?;
+        value = (value << 4) | digit as u16;
+    }
+    Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_json_string_array;
+
+    #[test]
+    fn parses_unicode_escape() {
+        let input = "[\"\\u3089\\u304f\\u3044\\u3061\"]";
+        let parsed = parse_json_string_array(input).expect("parse unicode escape");
+        assert_eq!(parsed, vec![String::from("\u{3089}\u{304f}\u{3044}\u{3061}")]);
+    }
+
+    #[test]
+    fn parses_surrogate_pair() {
+        let input = "[\"\\uD83D\\uDE00\"]";
+        let parsed = parse_json_string_array(input).expect("parse surrogate");
+        assert_eq!(parsed, vec![String::from("\u{1F600}")]);
+    }
+
+    #[test]
+    fn rejects_lonely_low_surrogate() {
+        let input = "[\"\\uDC00\"]";
+        assert!(parse_json_string_array(input).is_err());
+    }
 }
