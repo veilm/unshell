@@ -25,7 +25,10 @@ use rustyline::{
 use crate::parser::parse_args;
 use crate::state::{ReplBinding, ReplCompletionMode, ShellState};
 use crate::term::cursor_column;
-use crate::{build_prompt, process_line, run_named_function, RunResult, DEFAULT_PROMPT};
+use crate::{
+    build_prompt, maybe_auto_refresh_repl, process_line, run_named_function, RunResult,
+    DEFAULT_PROMPT,
+};
 
 const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_COMMENT: &str = "\x1b[0;90m";
@@ -1400,6 +1403,10 @@ pub fn run_repl(state: &mut ShellState) {
                     eprintln!("unshell: failed to reload repl: {err}");
                 }
             }
+        }
+
+        if let Err(err) = maybe_auto_refresh_repl(state) {
+            eprintln!("unshell: refresh failed: {err}");
         }
 
         let prompt = build_prompt(state);

@@ -331,6 +331,8 @@ set repl.bind alt-f forward-word
 set repl.bind btab complete
 ```
 - If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
+- `refresh-repl` re-execs into a new `ush` binary, preserving shell state (vars, aliases, functions, repl settings) without re-sourcing startup files.
+- If the running executable has been replaced/removed (e.g., after `install.sh`), the REPL auto-refreshes before rendering the next prompt and prints a one-line notice.
 
 - **Current implementation:**
   - `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session.
@@ -356,6 +358,7 @@ Flags:
 ```bash
 ush --norc          # skip all startup files
 ush --rc /path/to/init  # only source this file
+ush --restore /tmp/ush-state  # internal: restore repl state without sourcing rc
 ```
 
 ## Ambiguities / Open Questions
