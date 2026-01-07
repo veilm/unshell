@@ -1,0 +1,11 @@
+set expansions.characters "*" on
+root=[pwd]
+set expansions.handler python3 $root/util/expansion_handler.py
+
+tmp="/tmp/unshell-expansion-unicode-[date +%s%N]"
+mkdir -p $tmp
+cd $tmp
+python3 -c 'import os; os.mkdir("Foo bar")'
+python3 -c 'import os; os.mkdir("らくいち")'
+echo *
+rm -rf $tmp

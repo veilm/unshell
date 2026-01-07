@@ -63,7 +63,7 @@ def main():
     expanded = []
     for item in expand_brace(token):
         expanded.extend(expand_glob(item))
-    print(json.dumps(expanded))
+    print(json.dumps(expanded, ensure_ascii=False))
     return 0
 
 if __name__ == "__main__":
