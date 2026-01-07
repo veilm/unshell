@@ -510,6 +510,7 @@ struct Redirections {
 struct CommandSpec {
     args: Vec<String>,
     redirs: Redirections,
+    env_overrides: Vec<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -1192,10 +1193,10 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         let raw_args: Vec<String> = args.iter().map(|t| t.value.clone()).collect();
         let (assignments, remaining) = split_assignments(&raw_args);
         let assignments_len = assignments.len();
-        for (name, value) in assignments {
-            state.set_var(&name, value);
-        }
         if remaining.is_empty() {
+            for (name, value) in assignments {
+                state.set_var(&name, value);
+            }
             state.last_status = 0;
             return Ok(RunResult::Success(true));
         }
@@ -1210,9 +1211,15 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
         }
 
         if let Some(func) = state.functions.get(&remaining_args[0]).cloned() {
+            for (name, value) in assignments {
+                state.set_var(&name, value);
+            }
             return with_redirections(&redirs, || run_function(&remaining_args, func, state));
         }
         if is_builtin(&remaining_args[0]) {
+            for (name, value) in assignments {
+                state.set_var(&name, value);
+            }
             return with_redirections(&redirs, || {
                 run_builtin(&remaining_args, state)?
                     .ok_or_else(|| "builtin dispatch failed".to_string())
@@ -1222,6 +1229,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             vec![CommandSpec {
                 args: remaining_args,
                 redirs,
+                env_overrides: assignments,
             }],
             state,
         )?;
@@ -1273,9 +1281,6 @@ fn build_pipeline_stages_from_word_segments(
         let raw: Vec<String> = segment.iter().map(|t| t.value.clone()).collect();
         let (assignments, remaining) = split_assignments(&raw);
         let assignments_len = assignments.len();
-        for (name, value) in assignments {
-            state.set_var(&name, value);
-        }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
@@ -1288,6 +1293,9 @@ fn build_pipeline_stages_from_word_segments(
             return Err("empty command in pipeline".into());
         }
         if state.functions.contains_key(&args[0]) {
+            for (name, value) in assignments {
+                state.set_var(&name, value);
+            }
             stages.push(PipelineStage::Function(FunctionCall {
                 name: args[0].clone(),
                 args: args[1..].to_vec(),
@@ -1295,7 +1303,11 @@ fn build_pipeline_stages_from_word_segments(
             }));
             continue;
         }
-        stages.push(PipelineStage::External(CommandSpec { args, redirs }));
+        stages.push(PipelineStage::External(CommandSpec {
+            args,
+            redirs,
+            env_overrides: assignments,
+        }));
     }
 
     Ok(stages)
@@ -1821,9 +1833,6 @@ fn build_pipeline_stages_from_segments(
         let raw_values: Vec<String> = words.iter().map(|t| t.value.clone()).collect();
         let (assignments, remaining) = split_assignments(&raw_values);
         let assignments_len = assignments.len();
-        for (name, value) in assignments {
-            state.set_var(&name, value);
-        }
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
@@ -1836,6 +1845,9 @@ fn build_pipeline_stages_from_segments(
             return Err("empty command in pipeline".into());
         }
         if state.functions.contains_key(&args[0]) {
+            for (name, value) in assignments {
+                state.set_var(&name, value);
+            }
             stages.push(PipelineStage::Function(FunctionCall {
                 name: args[0].clone(),
                 args: args[1..].to_vec(),
@@ -1843,7 +1855,11 @@ fn build_pipeline_stages_from_segments(
             }));
             continue;
         }
-        stages.push(PipelineStage::External(CommandSpec { args, redirs }));
+        stages.push(PipelineStage::External(CommandSpec {
+            args,
+            redirs,
+            env_overrides: assignments,
+        }));
     }
 
     Ok(stages)
@@ -1863,6 +1879,9 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         let mut cmd = Command::new(&spec.args[0]);
         if spec.args.len() > 1 {
             cmd.args(&spec.args[1..]);
+        }
+        for (key, value) in spec.env_overrides.iter() {
+            cmd.env(key, value);
         }
 
         if let Some(input_path) = &spec.redirs.stdin {
@@ -2071,6 +2090,9 @@ fn run_pipeline_stages(
                 let mut cmd = Command::new(&spec.args[0]);
                 if spec.args.len() > 1 {
                     cmd.args(&spec.args[1..]);
+                }
+                for (key, value) in spec.env_overrides.iter() {
+                    cmd.env(key, value);
                 }
                 (cmd, spec.redirs.clone(), spec.args[0].clone())
             }
