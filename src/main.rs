@@ -23,7 +23,10 @@ use crate::parser::{
     append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
     split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
 };
-use crate::state::{lookup_var, write_locals_file, FunctionBody, FunctionDef, ShellState};
+use crate::state::{
+    lookup_var, read_shell_state_file, write_locals_file, write_shell_state_file, FunctionBody,
+    FunctionDef, ShellState,
+};
 use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
 #[cfg(feature = "repl")]
 use crate::workers::trim_trailing_newline;

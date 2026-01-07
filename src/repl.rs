@@ -1,6 +1,8 @@
 use std::borrow::Cow::{self, Borrowed, Owned};
+use std::collections::HashSet;
 use std::env;
 use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,6 +22,7 @@ use rustyline::{
     Movement, RepeatCount, Result, Validator, Word,
 };
 
+use crate::parser::parse_args;
 use crate::state::{ReplBinding, ReplCompletionMode, ShellState};
 use crate::term::cursor_column;
 use crate::{build_prompt, process_line, run_named_function, RunResult, DEFAULT_PROMPT};
@@ -37,6 +40,7 @@ const KEYWORDS: &[&str] = &[
 struct FuzzyCompleter {
     start_last: Arc<AtomicBool>,
     mode: ReplCompletionMode,
+    snapshot: Arc<Mutex<CompletionSnapshot>>,
 }
 
 impl CompletionTrait for FuzzyCompleter {
@@ -59,54 +63,57 @@ impl CompletionTrait for FuzzyCompleter {
         } else {
             word_start(line, pos)
         };
+        if fragment.starts_with('$') && !matches!(quote_ctx.as_ref(), Some(ctx) if ctx.quote == '\'') {
+            let vars = {
+                let guard = self.snapshot.lock().unwrap();
+                guard.vars.clone()
+            };
+            let candidates = list_var_candidates(&vars, fragment);
+            return complete_candidates(
+                candidates,
+                fragment,
+                start,
+                fragment,
+                quote_ctx.as_ref(),
+                self.mode,
+                &self.start_last,
+            );
+        }
+
+        if quote_ctx.is_none()
+            && is_command_position(line, start)
+            && !fragment.contains('/')
+            && !fragment.starts_with('.')
+        {
+            let commands = {
+                let mut guard = self.snapshot.lock().unwrap();
+                ensure_command_snapshot(&mut guard);
+                guard.commands.clone()
+            };
+            let candidates = list_command_candidates(&commands, fragment);
+            return complete_candidates(
+                candidates,
+                fragment,
+                start,
+                fragment,
+                quote_ctx.as_ref(),
+                self.mode,
+                &self.start_last,
+            );
+        }
+
         let (dir_prefix, query) = split_dir_query(fragment);
         let include_hidden = fragment.starts_with('.') || fragment.contains("/.");
         let candidates = list_dir_candidates(&dir_prefix, include_hidden);
-        if candidates.is_empty() {
-            return Ok((start, candidates));
-        }
-
-        if !query.is_empty() {
-            let mut prefix_matches: Vec<Pair> = candidates
-                .iter()
-                .filter(|c| c.display.starts_with(query))
-                .cloned()
-                .collect();
-            if prefix_matches.len() == 1 {
-                // Prefer prefix matches to avoid fuzzy surprises like "sour" vs "src".
-                finalize_completion_with_context(&mut prefix_matches[0], quote_ctx.as_ref());
-                return Ok((start, prefix_matches));
-            }
-        }
-
-        if matches!(self.mode, ReplCompletionMode::List) {
-            return Ok((start, candidates));
-        }
-
-        let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
-        let start_last = self.start_last.swap(false, Ordering::SeqCst);
-        match run_fuzzy(&choices, query, start_last) {
-            FuzzyOutcome::Selected(sel) => {
-                let selected = candidates
-                    .iter()
-                    .find(|c| c.display == sel)
-                    .cloned();
-                if let Some(mut choice) = selected {
-                    finalize_completion_with_context(&mut choice, quote_ctx.as_ref());
-                    Ok((start, vec![choice]))
-                } else {
-                    Ok((start, candidates))
-                }
-            }
-            FuzzyOutcome::Cancelled => Ok((
-                start,
-                vec![Pair {
-                    display: fragment.to_string(),
-                    replacement: fragment.to_string(),
-                }],
-            )),
-            FuzzyOutcome::Unavailable => Ok((start, candidates)),
-        }
+        complete_candidates(
+            candidates,
+            query,
+            start,
+            fragment,
+            quote_ctx.as_ref(),
+            self.mode,
+            &self.start_last,
+        )
     }
 
     fn update(
@@ -240,6 +247,231 @@ fn split_dir_query(fragment: &str) -> (String, &str) {
     }
 }
 
+#[derive(Default)]
+struct CompletionSnapshot {
+    vars: Vec<String>,
+    base_commands: Vec<String>,
+    commands: Vec<String>,
+    commands_ready: bool,
+    path: String,
+}
+
+fn complete_candidates(
+    candidates: Vec<Pair>,
+    query: &str,
+    start: usize,
+    fragment: &str,
+    quote_ctx: Option<&QuoteContext>,
+    mode: ReplCompletionMode,
+    start_last: &AtomicBool,
+) -> Result<(usize, Vec<Pair>)> {
+    if candidates.is_empty() {
+        return Ok((start, candidates));
+    }
+
+    if !query.is_empty() {
+        let mut prefix_matches: Vec<Pair> = candidates
+            .iter()
+            .filter(|c| c.display.starts_with(query))
+            .cloned()
+            .collect();
+        if prefix_matches.len() == 1 {
+            // Prefer prefix matches to avoid fuzzy surprises like "sour" vs "src".
+            finalize_completion_with_context(&mut prefix_matches[0], quote_ctx);
+            return Ok((start, prefix_matches));
+        }
+    }
+
+    if matches!(mode, ReplCompletionMode::List) {
+        return Ok((start, candidates));
+    }
+
+    let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
+    let start_last = start_last.swap(false, Ordering::SeqCst);
+    match run_fuzzy(&choices, query, start_last) {
+        FuzzyOutcome::Selected(sel) => {
+            let selected = candidates.iter().find(|c| c.display == sel).cloned();
+            if let Some(mut choice) = selected {
+                finalize_completion_with_context(&mut choice, quote_ctx);
+                Ok((start, vec![choice]))
+            } else {
+                Ok((start, candidates))
+            }
+        }
+        FuzzyOutcome::Cancelled => Ok((
+            start,
+            vec![Pair {
+                display: fragment.to_string(),
+                replacement: fragment.to_string(),
+            }],
+        )),
+        FuzzyOutcome::Unavailable => Ok((start, candidates)),
+    }
+}
+
+fn list_var_candidates(vars: &[String], fragment: &str) -> Vec<Pair> {
+    let mut out = Vec::new();
+    for name in vars {
+        let display = format!("${name}");
+        if fragment == "$" || display.starts_with(fragment) {
+            out.push(Pair {
+                display: display.clone(),
+                replacement: display,
+            });
+        }
+    }
+    out
+}
+
+fn list_command_candidates(commands: &[String], fragment: &str) -> Vec<Pair> {
+    let mut out = Vec::new();
+    for name in commands {
+        if fragment.is_empty() || name.starts_with(fragment) {
+            out.push(Pair {
+                display: name.clone(),
+                replacement: name.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn is_command_position(line: &str, start: usize) -> bool {
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut brace_depth = 0;
+    let mut last_op_end = 0usize;
+
+    while idx < start && idx < bytes.len() {
+        let ch = bytes[idx];
+        if in_double && ch == b'\\' && idx + 1 < start {
+            idx += 2;
+            continue;
+        }
+
+        match ch {
+            b'\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+                idx += 1;
+                continue;
+            }
+            b'"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+                idx += 1;
+                continue;
+            }
+            b'$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if idx + 1 < start && bytes[idx + 1] == b'(' {
+                    paren_depth = 1;
+                    idx += 2;
+                    continue;
+                }
+            }
+            b'[' if !in_double && !in_single && paren_depth == 0 => {
+                if idx + 1 < start && bytes[idx + 1].is_ascii_whitespace() {
+                    // literal [
+                } else {
+                    bracket_depth += 1;
+                }
+                idx += 1;
+                continue;
+            }
+            b'[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            b'(' if paren_depth > 0 => {
+                paren_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            b'{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                brace_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b'}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 {
+            if ch == b'|' {
+                if idx + 1 < start && bytes[idx + 1] == b'|' {
+                    idx += 2;
+                } else {
+                    idx += 1;
+                }
+                last_op_end = idx;
+                continue;
+            }
+            if ch == b'&' && idx + 1 < start && bytes[idx + 1] == b'&' {
+                idx += 2;
+                last_op_end = idx;
+                continue;
+            }
+            if ch == b';' {
+                idx += 1;
+                last_op_end = idx;
+                continue;
+            }
+        }
+
+        idx += 1;
+    }
+
+    let segment = line[last_op_end.min(start)..start].trim();
+    let Ok(tokens) = parse_args(segment) else {
+        return segment.is_empty();
+    };
+    if tokens.is_empty() {
+        return true;
+    }
+    tokens.iter().all(|token| is_assignment_token(token))
+}
+
+fn is_assignment_token(token: &str) -> bool {
+    let (name, _) = match token.split_once('=') {
+        Some((name, value)) if !name.is_empty() => (name, value),
+        _ => return false,
+    };
+    is_valid_var_name(name)
+}
+
+fn is_valid_var_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    for ch in chars {
+        if !(ch == '_' || ch.is_ascii_alphanumeric()) {
+            return false;
+        }
+    }
+    true
+}
+
 fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
     let dir_path = resolve_dir(dir_prefix);
     let mut entries = Vec::new();
@@ -270,6 +502,127 @@ fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
         a_lower.cmp(&b_lower).then_with(|| a.display.cmp(&b.display))
     });
     entries
+}
+
+fn collect_completion_snapshot(state: &ShellState) -> CompletionSnapshot {
+    let mut vars = HashSet::new();
+    for (name, _) in state.vars.iter() {
+        vars.insert(name.clone());
+    }
+    for frame in state.locals_stack.iter() {
+        for name in frame.keys() {
+            vars.insert(name.clone());
+        }
+    }
+    for (name, _) in env::vars() {
+        vars.insert(name);
+    }
+
+    let mut commands = HashSet::new();
+    for name in builtin_completion_names() {
+        commands.insert(name.to_string());
+    }
+    for name in state.functions.keys() {
+        commands.insert(name.clone());
+    }
+    for name in state.aliases.keys() {
+        commands.insert(name.clone());
+    }
+
+    let mut vars: Vec<String> = vars.into_iter().collect();
+    let mut commands: Vec<String> = commands.into_iter().collect();
+    vars.sort();
+    commands.sort();
+
+    let path = env::var("PATH").unwrap_or_default();
+    CompletionSnapshot {
+        vars,
+        base_commands: commands,
+        commands: Vec::new(),
+        commands_ready: false,
+        path,
+    }
+}
+
+fn builtin_completion_names() -> &'static [&'static str] {
+    &[
+        "alias",
+        "builtin",
+        "cd",
+        "def",
+        "elif",
+        "else",
+        "eval",
+        "exit",
+        "export",
+        "for",
+        "foreach",
+        "if",
+        "local",
+        "return",
+        "set",
+        "source",
+        "unalias",
+    ]
+}
+
+fn list_path_commands_with_value(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for dir in path.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !is_executable(&path) {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn ensure_command_snapshot(snapshot: &mut CompletionSnapshot) {
+    let current_path = env::var("PATH").unwrap_or_default();
+    if snapshot.commands_ready && snapshot.path == current_path {
+        return;
+    }
+    let mut commands = HashSet::new();
+    for name in snapshot.base_commands.iter() {
+        commands.insert(name.clone());
+    }
+    for name in list_path_commands_with_value(&current_path) {
+        commands.insert(name);
+    }
+    let mut commands: Vec<String> = commands.into_iter().collect();
+    commands.sort();
+    snapshot.commands = commands;
+    snapshot.commands_ready = true;
+    snapshot.path = current_path;
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 #[cfg(test)]
@@ -377,6 +730,34 @@ mod tests {
             super::parse_unknown_option(stderr),
             Some("--no-scrollbar".to_string())
         );
+    }
+
+    #[test]
+    fn command_position_after_operator() {
+        let line = "echo foo | bar";
+        let start = line.find("bar").unwrap();
+        assert!(super::is_command_position(line, start));
+    }
+
+    #[test]
+    fn command_position_inline_pipe() {
+        let line = "echo foo|bar";
+        let start = line.find("bar").unwrap();
+        assert!(super::is_command_position(line, start));
+    }
+
+    #[test]
+    fn not_command_position_after_arg() {
+        let line = "echo foo";
+        let start = line.find("foo").unwrap();
+        assert!(!super::is_command_position(line, start));
+    }
+
+    #[test]
+    fn command_position_after_assignment() {
+        let line = "VAR=1 cmd";
+        let start = line.find("cmd").unwrap();
+        assert!(super::is_command_position(line, start));
     }
 }
 
@@ -658,6 +1039,13 @@ struct ReplHelper {
     completer: FuzzyCompleter,
 }
 
+impl ReplHelper {
+    fn update_completion_snapshot(&mut self, snapshot: CompletionSnapshot) {
+        let mut guard = self.completer.snapshot.lock().unwrap();
+        *guard = snapshot;
+    }
+}
+
 struct CompletionEventHandler {
     start_last: bool,
     flag: Arc<AtomicBool>,
@@ -816,12 +1204,13 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
     let config = config_builder.build();
 
     let start_last = Arc::new(AtomicBool::new(false));
-    let helper = ReplHelper {
-        completer: FuzzyCompleter {
-            start_last: start_last.clone(),
-            mode: state.repl.completion_mode,
-        },
-    };
+        let helper = ReplHelper {
+            completer: FuzzyCompleter {
+                start_last: start_last.clone(),
+                mode: state.repl.completion_mode,
+                snapshot: Arc::new(Mutex::new(CompletionSnapshot::default())),
+            },
+        };
 
     let mut rl = Editor::with_config(config)?;
     rl.set_auto_add_history(false);
@@ -978,6 +1367,9 @@ pub fn run_repl(state: &mut ShellState) {
 
     loop {
         let next_history_path = resolve_history_path(state);
+        if let Some(helper) = rl.helper_mut() {
+            helper.update_completion_snapshot(collect_completion_snapshot(state));
+        }
         if state.needs_cursor_check {
             if let Some(column) = cursor_column() {
                 if column != 1 {
