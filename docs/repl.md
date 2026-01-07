@@ -1,8 +1,10 @@
 # unshell REPL
 
-The REPL is powered by Rustyline (default build). It starts in vi mode and provides history, file completion, and lightweight highlighting.
+- The REPL is powered by Rustyline (default build).
+- It starts in vi mode and provides history, file completion, and lightweight highlighting.
 
-When output is captured (non-tty stdout), the REPL inserts an inverted `$` marker if the previous command did not end with a newline. When stdout is a tty, the REPL preserves tty semantics for interactive apps and does not capture output.
+- When output is captured (non-tty stdout), the REPL inserts an inverted `$` marker if the previous command did not end with a newline.
+- When stdout is a tty, the REPL preserves tty semantics for interactive apps and does not capture output.
 
 ## Build Modes
 
@@ -18,13 +20,15 @@ Resolution order:
 3. `XDG_DATA_HOME/unshell/histfile`
 4. `$HOME/.local/share/histfile`
 
-The REPL appends new entries to the history file so multiple sessions can share the same file without clobbering each other's updates.
+- The REPL appends new entries to the history file so multiple sessions can share the same file without clobbering each other's updates.
 
 ## Startup Sourcing
 
-Startup sourcing applies to both REPL and script runs. See `docs/spec.md` for the order and flags.
+- Startup sourcing applies to both REPL and script runs.
+- See `docs/spec.md` for the order and flags.
 
-The default installer will drop a starter init at `/etc/unshell/init` if missing. It only prints a message when `USH_MODE=repl`.
+- The default installer will drop a starter init at `/etc/unshell/init` if missing.
+- It only prints a message when `USH_MODE=repl`.
 
 ## Completion
 
@@ -34,10 +38,14 @@ The default installer will drop a starter init at `/etc/unshell/init` if missing
 - use fzf: `set repl.completion.mode fzf`
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
-The REPL passes file candidates to `fzf` on stdin. It expects the same output shape as `fzf --print-query` (query line + selected line). List mode uses prefix matching and auto-completes when there is a single candidate. If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
-Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
-Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
-When completing inside quotes, the quoted fragment is used as the completion input. If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
+- The REPL passes file candidates to `fzf` on stdin.
+- It expects the same output shape as `fzf --print-query` (query line + selected line).
+- List mode uses prefix matching and auto-completes when there is a single candidate.
+- If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
+- Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
+- Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
+- When completing inside quotes, the quoted fragment is used as the completion input.
+- If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
 
 ## Highlighting
 
@@ -76,13 +84,14 @@ set repl.bind ctrl-e end-of-line
 set repl.bind esc accept-line
 ```
 
-In vi mode, `#` defaults to `comment-accept` unless overridden by a custom binding.
+- In vi mode, `#` defaults to `comment-accept` unless overridden by a custom binding.
 
-`set repl.history.file default` recomputes the history path using the resolution order above, even if it was already using the default path.
+- `set repl.history.file default` recomputes the history path using the resolution order above, even if it was already using the default path.
 
 ## Hooks
 
-If a function named `unshell_after_command_input` is defined, the REPL calls it after history is updated and before the command executes. The raw input line is passed as `$1`.
+- If a function named `unshell_after_command_input` is defined, the REPL calls it after history is updated and before the command executes.
+- The raw input line is passed as `$1`.
 
 ## Key Names
 
