@@ -8,12 +8,14 @@
 ## Features
 
 ### Execution & Pipes
-Commands run left-to-right using standard fork/exec and POSIX-style pipes. `;` sequences commands unconditionally, and `&&`/`||` short-circuit on success/failure. There is no special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`, and grouping still relies on parentheses for precedence without creating subshell semantics by default.
-Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
-Interactive shells run external pipelines in their own process group and temporarily hand off the controlling terminal when the shell owns the foreground. This lets terminal multiplexers report the active program and restores the shell as foreground after the pipeline completes.
-Non-zero exit codes only update `$?` and do not emit warnings by default.
-Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
-Missing commands in a pipeline report an error but do not abort the rest of the pipeline.
+- Commands run left-to-right using standard fork/exec and POSIX-style pipes.
+- `;` sequences commands unconditionally; `&&`/`||` short-circuit on success/failure.
+- No special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`; parentheses handle precedence without default subshell semantics.
+- Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
+- Interactive shells run external pipelines in their own process group and temporarily hand off the controlling terminal when the shell owns the foreground.
+- Non-zero exit codes only update `$?` and do not emit warnings by default.
+- Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
+- Missing commands in a pipeline report an error but do not abort the rest of the pipeline.
 ```bash
 ls /var/log | grep error | tail -n 20
 echo first ; echo second
@@ -23,10 +25,12 @@ def list_c { ls }
 list_c | grep c
 { echo test ; ls } | grep test
 ```
-Operators (`|`, `;`, `&&`, `||`) are recognized without surrounding whitespace (e.g., `ls|rg foo`, `echo hi;echo bye`). Redirection operators still require whitespace-separated tokens to avoid ambiguity.
+- Operators (`|`, `;`, `&&`, `||`) are recognized without surrounding whitespace (e.g., `ls|rg foo`, `echo hi;echo bye`).
+- Redirection operators still require whitespace-separated tokens to avoid ambiguity.
 
 ### Redirection
-Redirection uses explicit operator tokens and applies to the current pipeline segment only (e.g., `ls | rg foo out> log.txt` redirects `rg` output, not `ls`). Operators are recognized only in unquoted tokens.
+- Redirection uses explicit operator tokens and applies to the current pipeline segment only (e.g., `ls | rg foo out> log.txt` redirects `rg` output, not `ls`).
+- Operators are recognized only in unquoted tokens.
 
 #### Output and Error Streams
 - `>` and `>>` redirect stdout to a file (overwrite vs. append). The operator must be a separate token: `echo hi > out.log` is valid, `echo hi >out.log` is a parse error.
@@ -37,7 +41,9 @@ Redirection uses explicit operator tokens and applies to the current pipeline se
 - `null` or `n` as an attached destination sends output to `/dev/null` (e.g., `out>null`, `e>n`).
 - If whitespace separates the destination, it is treated as a literal path (e.g., `out> err` writes to a file named `err`).
 
-Multiple redirections are allowed. If the same stream is redirected more than once, the last redirection wins. Redirects to other streams always use the original stdout/stderr for the command (order does not change which underlying stream is targeted).
+- Multiple redirections are allowed.
+- If the same stream is redirected more than once, the last redirection wins.
+- Redirects to other streams always use the original stdout/stderr for the command (order does not change which underlying stream is targeted).
 
 #### Input
 `<` redirects stdin from a file. Like `>`/`>>`, it must be a separate token: `cat < input.log` is valid, `cat <input.log` is a parse error.
@@ -62,7 +68,13 @@ echo "literal # inside quotes"
 ```
 
 ### Atomic Variables & Assignment
-`$var` always expands to exactly one argument, preserving embedded spaces and newlines; `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes. No implicit splitting or globbing happens during expansion. **Current implementation:** leading `name=value` tokens set shell-local variables (no command runs if only assignments are present); when a command is external, those leading assignments are passed as environment overrides and do not persist in the shell; `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
+- `$var` always expands to exactly one argument, preserving embedded spaces and newlines.
+- `name=value` mutates shell-local state while `export name=value` promotes it to the environment of child processes.
+- No implicit splitting or globbing happens during expansion.
+- **Current implementation:**
+  - Leading `name=value` tokens set shell-local variables (no command runs if only assignments are present).
+  - When a command is external, those leading assignments are passed as environment overrides and do not persist in the shell.
+  - `$var` expands in unquoted tokens (including inline), and lookup checks shell-local variables before falling back to the process environment.
 ```bash
 path="My Projects/unshell"
 cd $path          # treated as one argument
@@ -70,7 +82,13 @@ export EDITOR=vim # propagated to children
 ```
 
 ### Spread Operator `...`
-`...` re-tokenizes a string using the shell's own parser. `...$var` or `...[cmd]` behaves like `eval` in place: quotes, escapes, and whitespace in the source are honored so the caller controls splitting. This is how legacy behaviors (space splitting, inline scripts) are opt-in. **Current implementation:** unquoted tokens starting with `...` re-tokenize their suffix after expanding captures/variables, and operator tokens from the spread (`|`, `;`, `&&`, `||`) are treated as normal separators. This is distinct from inline capture concatenation (`a[pwd]`), which stays a single argument unless you explicitly use `...`.
+- `...` re-tokenizes a string using the shell's own parser.
+- `...$var` or `...[cmd]` behaves like `eval` in place: quotes, escapes, and whitespace in the source are honored so the caller controls splitting.
+- This is how legacy behaviors (space splitting, inline scripts) are opt-in.
+- **Current implementation:**
+  - Unquoted tokens starting with `...` re-tokenize their suffix after expanding captures/variables.
+  - Operator tokens from the spread (`|`, `;`, `&&`, `||`) are treated as normal separators.
+  - Inline capture concatenation (`a[pwd]`) stays a single argument unless you explicitly use `...`.
 ```bash
 files="-la ./bin \"./my file.txt\""
 ls ...$files
@@ -92,13 +110,21 @@ hash="sha256:[sha256sum Cargo.lock]"
 ```
 
 ### Double-Quoted Strings & Capture Interpolation
-Double quotes group tokens without splitting, allow escaping via `\"` (all other backslashes remain literal), and support inline captures using `$[]` or `$()` plus `$var` interpolation. Anything else (including bare `[]`) remains literal inside strings. The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting; `$var` expands to its full value without trimming. **Single quotes** are fully literal: no `$var`, `$()`, or `$[]` expansion happens inside them.
+- Double quotes group tokens without splitting.
+- `\"` escapes inside double quotes; all other backslashes remain literal.
+- Inline captures (`$[]`, `$()`) and `$var` interpolation work inside double quotes.
+- Anything else (including bare `[]`) remains literal inside strings.
+- The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting.
+- `$var` expands to its full value without trimming.
+- **Single quotes** are fully literal: no `$var`, `$()`, or `$[]` expansion happens inside them.
 ```bash
 echo "hello $[echo world]" "$[pwd]"
 ```
 
 ### Configurable Trailing-Newline Trimming
-Because many programs emit terminal newlines, captures strip exactly one trailing `\n` by default. A shell option toggles the behavior at runtime for workflows that need raw output. Proposed syntax: `set subshells.trim_newline false` (and `true` to re-enable).
+- Because many programs emit terminal newlines, captures strip exactly one trailing `\n` by default.
+- A shell option toggles the behavior at runtime for workflows that need raw output.
+- Proposed syntax: `set subshells.trim_newline false` (and `true` to re-enable).
 ```bash
 set subshells.trim_newline false
 printf "[cat banner.bin]"
@@ -106,7 +132,8 @@ printf "[cat banner.bin]"
 **Current implementation:** `set subshells.trim_newline true|false` controls whether capture output removes a single trailing newline.
 
 ### Explicit `eval` Command
-`eval` takes a single argument, runs it through the parser, and executes the resulting command sequence. This makes dynamic dispatch possible even when the callee is indirect.
+- `eval` takes a single argument, runs it through the parser, and executes the resulting command sequence.
+- This makes dynamic dispatch possible even when the callee is indirect.
 ```bash
 cmd=eval
 payload='touch "generated file.txt"'
@@ -115,20 +142,27 @@ $cmd $payload
 **Current implementation:** `eval` runs in the parent shell (not a subshell) and can mutate shell state.
 
 ### `source` Command
-`source` executes a script in the current shell process and can mutate variables, aliases, and the working directory. It accepts an optional list of positional args that are visible inside the sourced script.
+- `source` executes a script in the current shell process and can mutate variables, aliases, and the working directory.
+- It accepts an optional list of positional args that are visible inside the sourced script.
 ```bash
 source ./env.ush prod
 ```
 **Current implementation:** `source PATH [ARGS...]` runs in the parent shell and restores the caller’s positional args afterward. `exit` inside a sourced file exits the current shell (including startup scripts), and `$?` reflects the last status from the sourced commands.
 
 ### Grouping with Parentheses
-Parentheses still group pipelines without invoking capture semantics, letting users control precedence or isolate redirections without new processes unless the OS requires them.
+- Parentheses group pipelines without invoking capture semantics.
+- This lets users control precedence or isolate redirections without new processes unless the OS requires them.
 ```bash
 (cat foo && cat bar) | grep TODO
 ```
 
 ### Control Flow Blocks
-Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either a newline with indentation **using hard tabs only** (Python-style but without spaces) **or** a brace-delimited block (inline or multi-line). Authors can mix styles per block, but indentation inside braces is still recommended for clarity. `if`/`elif` conditions accept full command chains, including pipes and `&&`/`||`/`;` logic, and the block runs if the final status is zero. **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts, with full command-line evaluation for conditions.
+- Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either:
+  - a newline with indentation **using hard tabs only** (Python-style but without spaces), or
+  - a brace-delimited block (inline or multi-line).
+- Authors can mix styles per block, but indentation inside braces is still recommended for clarity.
+- `if`/`elif` conditions accept full command chains, including pipes and `&&`/`||`/`;` logic, and the block runs if the final status is zero.
+- **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts, with full command-line evaluation for conditions.
 ```bash
 if test -f config.toml
 	echo "config exists"
@@ -143,7 +177,11 @@ if echo hi | grep h { echo "pipeline ok" }
 ```
 
 ### Functions: `def`
-`def name` defines a function using either a tab-indented block or brace-delimited block. Functions run in the parent shell (no subshell), so they can mutate variables and the working directory. `return STATUS_HERE` ends the current function and sets `$?` to the given status (defaults to the last command status). `local name=value` creates a function-scoped variable; normal assignments remain global. To prevent runaway recursion, function calls are capped at a small fixed depth.
+- `def name` defines a function using either a tab-indented block or brace-delimited block.
+- Functions run in the parent shell (no subshell), so they can mutate variables and the working directory.
+- `return STATUS_HERE` ends the current function and sets `$?` to the given status (defaults to the last command status).
+- `local name=value` creates a function-scoped variable; normal assignments remain global.
+- To prevent runaway recursion, function calls are capped at a small fixed depth.
 ```bash
 def greeting
 	echo "hello $1"
@@ -156,7 +194,11 @@ def maybe
 ```
 
 ### Positional Arguments
-Scripts and functions expose positional args as `$1`, `$2`, ...; `$#` is the count; `$*` expands to the list (unquoted yields multiple args, quoted joins with spaces); `$?` is the last status. There is therefore no need for `$@`.
+- Scripts and functions expose positional args as `$1`, `$2`, ... .
+- `$#` is the count.
+- `$*` expands to the list (unquoted yields multiple args, quoted joins with spaces).
+- `$?` is the last status.
+- There is therefore no need for `$@`.
 ```bash
 echo "args=$#"           # count
 printf "%s|" $*          # each arg
@@ -164,7 +206,8 @@ printf "%s|" "$*"        # joined into one string
 ```
 
 ### Argument Loops: `for … in`
-`for name in arglist` iterates over a fully realized list of arguments (typically produced with `...`). Each iteration binds `name` without exporting it.
+- `for name in arglist` iterates over a fully realized list of arguments (typically produced with `...`).
+- Each iteration binds `name` without exporting it.
 ```bash
 for server in ...[cat servers.list | quote]
     ssh $server uptime
@@ -172,7 +215,10 @@ for server in ...[cat servers.list | quote]
 **Current implementation:** tab-indented `for name in ...` blocks inside scripts, reusing the existing tab-indented block execution model.
 
 ### Stream Loops: `foreach`
-`cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the block for each row. The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything. `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell. Tab-indented blocks are only allowed when `foreach` is the final pipeline stage; use braces to continue piping.
+- `cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the block for each row.
+- The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything.
+- `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell.
+- Tab-indented blocks are only allowed when `foreach` is the final pipeline stage; use braces to continue piping.
 ```bash
 ls -1 | foreach file
 	cp $file ../backup/
@@ -182,7 +228,12 @@ ls -1 | foreach file
 **Current implementation:** brace or tab-indented `cmd | foreach name` blocks execute in a child process and can appear mid-pipeline; each line of upstream stdout is bound to `name`. If a line uses the spread operator (`...`) and expands to `foreach`, it must use inline braces.
 
 ### External Expansion Handlers
-Globs, brace expansion, or other sigils are delegated to a single user-space helper configured via `set`. Callers enable the characters that should trigger expansion (`set expansions.characters "@" on`, `set expansions.characters "{" on`, etc.), then point the shell at the handler binary and its fixed leading arguments (`set expansions.handler foo bar baz`). When the parser sees any unescaped, unquoted token containing a registered character, it invokes the handler as `foo bar baz <token>` and expects a JSON array of replacement arguments. The helper is responsible for parsing mixed syntax (e.g., both `@` and `{}` inside one token) and deciding how to expand it. This keeps the core small while letting users swap expansion strategies without recompiling the shell.
+- Globs, brace expansion, or other sigils are delegated to a single user-space helper configured via `set`.
+- Callers enable the characters that should trigger expansion (`set expansions.characters "@" on`, `set expansions.characters "{" on`, etc.).
+- The handler binary and its fixed leading arguments are configured with `set expansions.handler foo bar baz`.
+- When the parser sees any unescaped, unquoted token containing a registered character, it invokes the handler as `foo bar baz <token>` and expects a JSON array of replacement arguments.
+- The helper is responsible for parsing mixed syntax (e.g., both `@` and `{}` inside one token) and deciding how to expand it.
+- This keeps the core small while letting users swap expansion strategies without recompiling the shell.
 ```bash
 # Example configuration
 set expansions.characters "@" on
@@ -197,7 +248,9 @@ echo foo@bar{.txt,.log}
 **Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of UTF-8 strings to splice into the argument list (`\\u` escapes are supported); handler failures or invalid JSON abort the command.
 
 ### External String & Quoting Utilities
-Utilities such as `s` (string transforms) and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries. `quote`'s contract: read stdin, treat each line as a record, emit a space-separated list where each record is wrapped in quotes and internal quotes/backslashes are escaped so `...` can safely re-tokenize the output. Additional helpers (like a configurable-delimiter `split`) can exist in user space, but the shell core remains agnostic.
+- Utilities such as `s` (string transforms) and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries.
+- `quote`'s contract: read stdin, treat each line as a record, emit a space-separated list where each record is wrapped in quotes and internal quotes/backslashes are escaped so `...` can safely re-tokenize the output.
+- Additional helpers (like a configurable-delimiter `split`) can exist in user space, but the shell core remains agnostic.
 ```bash
 title=$(s $raw_title trim)
 ls ...[ls | quote]
@@ -206,16 +259,22 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords. Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
+- The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords.
+- Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"
 unalias ll
 cd /srv/www
 ```
-**Current implementation:** `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut), `export` sets both shell-local and process environment variables, and alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`). Aliases expand at command start plus optional global aliases for any token (`alias -g`).
+- **Current implementation:**
+  - `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut).
+  - `export` sets both shell-local and process environment variables.
+  - Alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`).
+  - Aliases expand at command start plus optional global aliases for any token (`alias -g`).
 
 ### `builtin` Dispatch
-`builtin NAME ...` forces a built-in lookup for `NAME`, bypassing functions. Normal and global aliases still apply before the command is parsed, so a global alias can rewrite the builtin invocation itself.
+- `builtin NAME ...` forces a built-in lookup for `NAME`, bypassing functions.
+- Normal and global aliases still apply before the command is parsed, so a global alias can rewrite the builtin invocation itself.
 ```bash
 def cd
 	echo "shadowed $*"
@@ -227,7 +286,8 @@ builtin cd /tmp  # -> "alias /tmp" (global alias rewrites the token)
 ```
 
 ### Alias Semantics
-Aliases are parsed like normal commands: argument parsing and expansions happen before the builtin receives values. Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first token of a command or pipeline segment.
+- Aliases are parsed like normal commands: argument parsing and expansions happen before the builtin receives values.
+- Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first token of a command or pipeline segment.
 ```bash
 alias greet "echo $name"
 alias -g today "[date +%F]"
@@ -235,10 +295,16 @@ alias -g today "[date +%F]"
 greet      # expands to: echo <value-of-$name-at-definition-time>
 echo today # expands to: echo [date +%F]
 ```
-**Current implementation:** alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand; alias expansion repeats while `aliases.recursive` is true; quoted tokens never trigger global alias replacement; alias expansion happens before control keywords are parsed. `alias NAME` with no value prints the current alias (or errors if it does not exist).
+- **Current implementation:**
+  - Alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand.
+  - Alias expansion repeats while `aliases.recursive` is true.
+  - Quoted tokens never trigger global alias replacement.
+  - Alias expansion happens before control keywords are parsed.
+  - `alias NAME` with no value prints the current alias (or errors if it does not exist).
 
 ### Shell Settings
-Settings are toggled with `set KEY VALUE` and apply to the running shell. The initial configuration is intentionally small.
+- Settings are toggled with `set KEY VALUE` and apply to the running shell.
+- The initial configuration is intentionally small.
 ```bash
 set aliases.recursive false
 set aliases.recursive true
@@ -246,7 +312,12 @@ set aliases.recursive true
 **Current implementation:** `aliases.recursive` controls whether alias expansion repeats until it stabilizes.
 
 ### REPL (Optional)
-The interactive prompt is provided by Rustyline when built with the default `repl` feature. Vi mode is the default editing mode, history is persisted based on `USH_HISTFILE`/`HISTFILE`/`XDG_DATA_HOME`/`$HOME` (see `docs/repl.md`), and completion uses `fzf` when available with a list-completion fallback. Basic highlighting colors strings and built-ins/control keywords. REPL-only settings are configured via `set`:
+- The interactive prompt is provided by Rustyline when built with the default `repl` feature.
+- Vi mode is the default editing mode.
+- History is persisted based on `USH_HISTFILE`/`HISTFILE`/`XDG_DATA_HOME`/`$HOME` (see `docs/repl.md`).
+- Completion uses `fzf` when available with a list-completion fallback.
+- Basic highlighting colors strings and built-ins/control keywords.
+- REPL-only settings are configured via `set`:
 ```bash
 set repl.mode vi
 set repl.mode emacs
@@ -259,12 +330,17 @@ set repl.bind ctrl-e end-of-line
 set repl.bind alt-f forward-word
 set repl.bind btab complete
 ```
-If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
+- If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
 
-**Current implementation:** `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session; `repl.completion.mode` accepts `fzf`, `list`, or `off`; `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept), and `btab` completion starts fzf on the last match. `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.
+- **Current implementation:**
+  - `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session.
+  - `repl.completion.mode` accepts `fzf`, `list`, or `off`.
+  - `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept).
+  - `btab` completion starts fzf on the last match.
+  - `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.
 
 ### Startup Sourcing
-Before sourcing any startup files, the shell sets `SHELL=ush` and `USH_MODE` (`repl` or `script`).
+- Before sourcing any startup files, the shell sets `SHELL=ush` and `USH_MODE` (`repl` or `script`).
 
 The shell sources the first existing init file from this list:
 
