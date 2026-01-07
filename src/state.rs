@@ -148,18 +148,14 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
     let count = state.vars.len() as u32;
     write_u32(&mut file, count)?;
     for (name, value) in state.vars.iter() {
-        write_u32(&mut file, name.len() as u32)?;
-        file.write_all(name.as_bytes())?;
-        write_u32(&mut file, value.len() as u32)?;
-        file.write_all(value.as_bytes())?;
+        write_string(&mut file, name)?;
+        write_string(&mut file, value)?;
     }
     let alias_count = state.aliases.len() as u32;
     write_u32(&mut file, alias_count)?;
     for (name, value) in state.aliases.iter() {
-        write_u32(&mut file, name.len() as u32)?;
-        file.write_all(name.as_bytes())?;
-        write_u32(&mut file, value.value.len() as u32)?;
-        file.write_all(value.value.as_bytes())?;
+        write_string(&mut file, name)?;
+        write_string(&mut file, &value.value)?;
         write_bool(&mut file, value.global)?;
     }
     write_bool(&mut file, state.options.aliases_recursive)?;
@@ -167,47 +163,39 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
     let mut chars: Vec<char> = state.options.expansions_chars.iter().copied().collect();
     chars.sort_unstable();
     let chars_string: String = chars.into_iter().collect();
-    write_u32(&mut file, chars_string.len() as u32)?;
-    file.write_all(chars_string.as_bytes())?;
+    write_string(&mut file, &chars_string)?;
     write_u32(&mut file, state.options.expansions_handler.len() as u32)?;
     for value in state.options.expansions_handler.iter() {
-        write_u32(&mut file, value.len() as u32)?;
-        file.write_all(value.as_bytes())?;
+        write_string(&mut file, value)?;
     }
     write_u32(&mut file, state.locals_stack.len() as u32)?;
     for frame in state.locals_stack.iter() {
         write_u32(&mut file, frame.len() as u32)?;
         for (name, value) in frame.iter() {
-            write_u32(&mut file, name.len() as u32)?;
-            file.write_all(name.as_bytes())?;
-            write_u32(&mut file, value.len() as u32)?;
-            file.write_all(value.as_bytes())?;
+            write_string(&mut file, name)?;
+            write_string(&mut file, value)?;
         }
     }
     write_u32(&mut file, state.functions.len() as u32)?;
     for (name, func) in state.functions.iter() {
-        write_u32(&mut file, name.len() as u32)?;
-        file.write_all(name.as_bytes())?;
+        write_string(&mut file, name)?;
         match &func.body {
             FunctionBody::Inline(body) => {
                 write_bool(&mut file, true)?;
-                write_u32(&mut file, body.len() as u32)?;
-                file.write_all(body.as_bytes())?;
+                write_string(&mut file, body)?;
             }
             FunctionBody::Block(lines) => {
                 write_bool(&mut file, false)?;
                 write_u32(&mut file, lines.len() as u32)?;
                 for line in lines {
-                    write_u32(&mut file, line.len() as u32)?;
-                    file.write_all(line.as_bytes())?;
+                    write_string(&mut file, line)?;
                 }
             }
         }
     }
     write_u32(&mut file, state.positional.len() as u32)?;
     for value in state.positional.iter() {
-        write_u32(&mut file, value.len() as u32)?;
-        file.write_all(value.as_bytes())?;
+        write_string(&mut file, value)?;
     }
     write_i32(&mut file, state.last_status)?;
     write_bool(&mut file, state.interactive)?;
@@ -220,50 +208,25 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
     let count = read_u32(&mut file)?;
     let mut state = ShellState::new();
     for _ in 0..count {
-        let name_len = read_u32(&mut file)? as usize;
-        let mut name_buf = vec![0u8; name_len];
-        file.read_exact(&mut name_buf)?;
-        let value_len = read_u32(&mut file)? as usize;
-        let mut value_buf = vec![0u8; value_len];
-        file.read_exact(&mut value_buf)?;
-        let name = String::from_utf8(name_buf)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals name not utf-8"))?;
-        let value = String::from_utf8(value_buf)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals value not utf-8"))?;
+        let name = read_string(&mut file, "locals name")?;
+        let value = read_string(&mut file, "locals value")?;
         state.set_var(&name, value);
     }
     let alias_count = read_u32(&mut file)?;
     for _ in 0..alias_count {
-        let name_len = read_u32(&mut file)? as usize;
-        let mut name_buf = vec![0u8; name_len];
-        file.read_exact(&mut name_buf)?;
-        let value_len = read_u32(&mut file)? as usize;
-        let mut value_buf = vec![0u8; value_len];
-        file.read_exact(&mut value_buf)?;
         let global = read_bool(&mut file)?;
-        let name = String::from_utf8(name_buf)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias name not utf-8"))?;
-        let value = String::from_utf8(value_buf)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "alias value not utf-8"))?;
+        let name = read_string(&mut file, "alias name")?;
+        let value = read_string(&mut file, "alias value")?;
         state.set_alias(&name, value, global);
     }
     state.options.aliases_recursive = read_bool(&mut file)?;
     state.options.subshells_trim_newline = read_bool(&mut file)?;
-    let chars_len = read_u32(&mut file)? as usize;
-    let mut chars_buf = vec![0u8; chars_len];
-    file.read_exact(&mut chars_buf)?;
-    let chars = String::from_utf8(chars_buf)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "expansion chars not utf-8"))?;
-    state.options.expansions_chars = chars.chars().collect();
+    let chars_string = read_string(&mut file, "expansion chars")?;
+    state.options.expansions_chars = chars_string.chars().collect();
     let handler_len = read_u32(&mut file)? as usize;
     state.options.expansions_handler = Vec::with_capacity(handler_len);
     for _ in 0..handler_len {
-        let value_len = read_u32(&mut file)? as usize;
-        let mut value_buf = vec![0u8; value_len];
-        file.read_exact(&mut value_buf)?;
-        let value = String::from_utf8(value_buf).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "expansion handler not utf-8")
-        })?;
+        let value = read_string(&mut file, "expansion handler")?;
         state.options.expansions_handler.push(value);
     }
     let locals_count = read_u32(&mut file)? as usize;
@@ -272,47 +235,24 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         let frame_len = read_u32(&mut file)? as usize;
         let mut frame = HashMap::with_capacity(frame_len);
         for _ in 0..frame_len {
-            let name_len = read_u32(&mut file)? as usize;
-            let mut name_buf = vec![0u8; name_len];
-            file.read_exact(&mut name_buf)?;
-            let value_len = read_u32(&mut file)? as usize;
-            let mut value_buf = vec![0u8; value_len];
-            file.read_exact(&mut value_buf)?;
-            let name = String::from_utf8(name_buf)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "locals name not utf-8"))?;
-            let value = String::from_utf8(value_buf).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "locals value not utf-8")
-            })?;
+            let name = read_string(&mut file, "locals name")?;
+            let value = read_string(&mut file, "locals value")?;
             frame.insert(name, value);
         }
         state.locals_stack.push(frame);
     }
     let funcs_len = read_u32(&mut file)? as usize;
     for _ in 0..funcs_len {
-        let name_len = read_u32(&mut file)? as usize;
-        let mut name_buf = vec![0u8; name_len];
-        file.read_exact(&mut name_buf)?;
-        let name = String::from_utf8(name_buf)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "function name not utf-8"))?;
+        let name = read_string(&mut file, "function name")?;
         let inline = read_bool(&mut file)?;
         let body = if inline {
-            let body_len = read_u32(&mut file)? as usize;
-            let mut body_buf = vec![0u8; body_len];
-            file.read_exact(&mut body_buf)?;
-            let body = String::from_utf8(body_buf).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "function body not utf-8")
-            })?;
+            let body = read_string(&mut file, "function body")?;
             FunctionBody::Inline(body)
         } else {
             let line_count = read_u32(&mut file)? as usize;
             let mut lines = Vec::with_capacity(line_count);
             for _ in 0..line_count {
-                let line_len = read_u32(&mut file)? as usize;
-                let mut line_buf = vec![0u8; line_len];
-                file.read_exact(&mut line_buf)?;
-                let line = String::from_utf8(line_buf).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "function line not utf-8")
-                })?;
+                let line = read_string(&mut file, "function line")?;
                 lines.push(line);
             }
             FunctionBody::Block(lines)
@@ -324,16 +264,229 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
     let positional_len = read_u32(&mut file)? as usize;
     state.positional = Vec::with_capacity(positional_len);
     for _ in 0..positional_len {
-        let value_len = read_u32(&mut file)? as usize;
-        let mut value_buf = vec![0u8; value_len];
-        file.read_exact(&mut value_buf)?;
-        let value = String::from_utf8(value_buf).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "positional arg not utf-8")
-        })?;
+        let value = read_string(&mut file, "positional arg")?;
         state.positional.push(value);
     }
     state.last_status = read_i32(&mut file)?;
     state.interactive = read_bool(&mut file)?;
+    Ok(state)
+}
+
+const STATE_MAGIC: &[u8] = b"USHSTATE";
+const STATE_VERSION: u32 = 1;
+
+pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
+    let (path, mut file) = create_temp_file("state")?;
+    file.write_all(STATE_MAGIC)?;
+    write_u32(&mut file, STATE_VERSION)?;
+
+    write_u32(&mut file, state.vars.len() as u32)?;
+    for (name, value) in state.vars.iter() {
+        write_string(&mut file, name)?;
+        write_string(&mut file, value)?;
+    }
+    write_u32(&mut file, state.aliases.len() as u32)?;
+    for (name, value) in state.aliases.iter() {
+        write_string(&mut file, name)?;
+        write_string(&mut file, &value.value)?;
+        write_bool(&mut file, value.global)?;
+    }
+    write_bool(&mut file, state.options.aliases_recursive)?;
+    write_bool(&mut file, state.options.subshells_trim_newline)?;
+    let mut chars: Vec<char> = state.options.expansions_chars.iter().copied().collect();
+    chars.sort_unstable();
+    let chars_string: String = chars.into_iter().collect();
+    write_string(&mut file, &chars_string)?;
+    write_u32(&mut file, state.options.expansions_handler.len() as u32)?;
+    for value in state.options.expansions_handler.iter() {
+        write_string(&mut file, value)?;
+    }
+    write_u32(&mut file, state.locals_stack.len() as u32)?;
+    for frame in state.locals_stack.iter() {
+        write_u32(&mut file, frame.len() as u32)?;
+        for (name, value) in frame.iter() {
+            write_string(&mut file, name)?;
+            write_string(&mut file, value)?;
+        }
+    }
+    write_u32(&mut file, state.functions.len() as u32)?;
+    for (name, func) in state.functions.iter() {
+        write_string(&mut file, name)?;
+        match &func.body {
+            FunctionBody::Inline(body) => {
+                write_bool(&mut file, true)?;
+                write_string(&mut file, body)?;
+            }
+            FunctionBody::Block(lines) => {
+                write_bool(&mut file, false)?;
+                write_u32(&mut file, lines.len() as u32)?;
+                for line in lines {
+                    write_string(&mut file, line)?;
+                }
+            }
+        }
+    }
+    write_u32(&mut file, state.positional.len() as u32)?;
+    for value in state.positional.iter() {
+        write_string(&mut file, value)?;
+    }
+    write_i32(&mut file, state.last_status)?;
+    write_bool(&mut file, state.interactive)?;
+
+    write_bool(&mut file, state.repl.vi_mode)?;
+    write_u32(
+        &mut file,
+        match state.repl.completion_mode {
+            ReplCompletionMode::Fzf => 0,
+            ReplCompletionMode::List => 1,
+            ReplCompletionMode::Off => 2,
+        },
+    )?;
+    write_bool(&mut file, state.repl.bracketed_paste)?;
+    write_u32(&mut file, state.repl.bindings.len() as u32)?;
+    for binding in state.repl.bindings.iter() {
+        write_string(&mut file, &binding.key)?;
+        write_string(&mut file, &binding.action)?;
+    }
+    match state.repl.prompt_command.as_ref() {
+        Some(value) => {
+            write_bool(&mut file, true)?;
+            write_string(&mut file, value)?;
+        }
+        None => {
+            write_bool(&mut file, false)?;
+        }
+    }
+    match state.repl.history_file.as_ref() {
+        Some(value) => {
+            write_bool(&mut file, true)?;
+            write_string(&mut file, value)?;
+        }
+        None => {
+            write_bool(&mut file, false)?;
+        }
+    }
+    write_u32(&mut file, state.repl.generation)?;
+    write_bool(&mut file, state.last_output_newline)?;
+    write_bool(&mut file, state.needs_cursor_check)?;
+    file.flush()?;
+    Ok((path.clone(), TempFileGuard::new(path)))
+}
+
+pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
+    let mut file = File::open(path)?;
+    let mut magic = vec![0u8; STATE_MAGIC.len()];
+    file.read_exact(&mut magic)?;
+    if magic != STATE_MAGIC {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "state file header mismatch",
+        ));
+    }
+    let version = read_u32(&mut file)?;
+    if version != STATE_VERSION {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "state file version mismatch",
+        ));
+    }
+    let mut state = ShellState::new();
+    let count = read_u32(&mut file)? as usize;
+    for _ in 0..count {
+        let name = read_string(&mut file, "locals name")?;
+        let value = read_string(&mut file, "locals value")?;
+        state.set_var(&name, value);
+    }
+    let alias_count = read_u32(&mut file)? as usize;
+    for _ in 0..alias_count {
+        let name = read_string(&mut file, "alias name")?;
+        let value = read_string(&mut file, "alias value")?;
+        let global = read_bool(&mut file)?;
+        state.set_alias(&name, value, global);
+    }
+    state.options.aliases_recursive = read_bool(&mut file)?;
+    state.options.subshells_trim_newline = read_bool(&mut file)?;
+    let chars_string = read_string(&mut file, "expansion chars")?;
+    state.options.expansions_chars = chars_string.chars().collect();
+    let handler_len = read_u32(&mut file)? as usize;
+    state.options.expansions_handler = Vec::with_capacity(handler_len);
+    for _ in 0..handler_len {
+        let value = read_string(&mut file, "expansion handler")?;
+        state.options.expansions_handler.push(value);
+    }
+    let locals_count = read_u32(&mut file)? as usize;
+    state.locals_stack = Vec::with_capacity(locals_count);
+    for _ in 0..locals_count {
+        let frame_len = read_u32(&mut file)? as usize;
+        let mut frame = HashMap::with_capacity(frame_len);
+        for _ in 0..frame_len {
+            let name = read_string(&mut file, "locals name")?;
+            let value = read_string(&mut file, "locals value")?;
+            frame.insert(name, value);
+        }
+        state.locals_stack.push(frame);
+    }
+    let funcs_len = read_u32(&mut file)? as usize;
+    for _ in 0..funcs_len {
+        let name = read_string(&mut file, "function name")?;
+        let inline = read_bool(&mut file)?;
+        let body = if inline {
+            let body = read_string(&mut file, "function body")?;
+            FunctionBody::Inline(body)
+        } else {
+            let line_count = read_u32(&mut file)? as usize;
+            let mut lines = Vec::with_capacity(line_count);
+            for _ in 0..line_count {
+                let line = read_string(&mut file, "function line")?;
+                lines.push(line);
+            }
+            FunctionBody::Block(lines)
+        };
+        state
+            .functions
+            .insert(name, FunctionDef { body });
+    }
+    let positional_len = read_u32(&mut file)? as usize;
+    state.positional = Vec::with_capacity(positional_len);
+    for _ in 0..positional_len {
+        let value = read_string(&mut file, "positional arg")?;
+        state.positional.push(value);
+    }
+    state.last_status = read_i32(&mut file)?;
+    state.interactive = read_bool(&mut file)?;
+
+    state.repl.vi_mode = read_bool(&mut file)?;
+    state.repl.completion_mode = match read_u32(&mut file)? {
+        0 => ReplCompletionMode::Fzf,
+        1 => ReplCompletionMode::List,
+        2 => ReplCompletionMode::Off,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid repl completion mode",
+            ))
+        }
+    };
+    state.repl.bracketed_paste = read_bool(&mut file)?;
+    let binding_len = read_u32(&mut file)? as usize;
+    state.repl.bindings = Vec::with_capacity(binding_len);
+    for _ in 0..binding_len {
+        let key = read_string(&mut file, "repl binding key")?;
+        let action = read_string(&mut file, "repl binding action")?;
+        state.repl.bindings.push(ReplBinding { key, action });
+    }
+    let has_prompt = read_bool(&mut file)?;
+    if has_prompt {
+        state.repl.prompt_command = Some(read_string(&mut file, "repl prompt")?);
+    }
+    let has_history = read_bool(&mut file)?;
+    if has_history {
+        state.repl.history_file = Some(read_string(&mut file, "repl history")?);
+    }
+    state.repl.generation = read_u32(&mut file)?;
+    state.last_output_newline = read_bool(&mut file)?;
+    state.needs_cursor_check = read_bool(&mut file)?;
+
     Ok(state)
 }
 
@@ -406,4 +559,21 @@ fn read_i32<R: Read>(reader: &mut R) -> io::Result<i32> {
     let mut buf = [0u8; 4];
     reader.read_exact(&mut buf)?;
     Ok(i32::from_le_bytes(buf))
+}
+
+fn write_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
+    write_u32(writer, value.len() as u32)?;
+    writer.write_all(value.as_bytes())
+}
+
+fn read_string<R: Read>(reader: &mut R, label: &str) -> io::Result<String> {
+    let value_len = read_u32(reader)? as usize;
+    let mut value_buf = vec![0u8; value_len];
+    reader.read_exact(&mut value_buf)?;
+    String::from_utf8(value_buf).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{label} not utf-8"),
+        )
+    })
 }

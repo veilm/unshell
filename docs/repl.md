@@ -38,7 +38,7 @@ Resolution order:
 - use fzf: `set repl.completion.mode fzf`
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
-- The REPL passes file candidates to `fzf` on stdin.
+- The REPL passes file, command, or variable candidates to `fzf` on stdin.
 - It expects the same output shape as `fzf --print-query` (query line + selected line).
 - List mode uses prefix matching and auto-completes when there is a single candidate.
 - If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
@@ -46,6 +46,8 @@ Resolution order:
 - Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
 - When completing inside quotes, the quoted fragment is used as the completion input.
 - If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
+- Variable completion triggers when the fragment starts with `$`, using the current shell/environment variable names.
+- Command completion triggers in command position (first word of a pipeline segment) and looks at builtins, functions, aliases, and `$PATH`.
 
 ## Highlighting
 
