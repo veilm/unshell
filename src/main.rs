@@ -24,8 +24,8 @@ use crate::parser::{
     split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
 };
 use crate::state::{
-    lookup_var, read_shell_state_file, write_locals_file, write_shell_state_file, FunctionBody,
-    FunctionDef, ShellState,
+    lookup_var, read_locals_file, read_shell_state_file, write_locals_file, write_shell_state_file,
+    FunctionBody, FunctionDef, ShellState,
 };
 use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
 #[cfg(feature = "repl")]
@@ -71,6 +71,15 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+    if args.len() > 1 && args[1] == "--builtin-worker" {
+        match run_builtin_worker(&args[2..]) {
+            Ok(code) => std::process::exit(code),
+            Err(err) => {
+                eprintln!("unshell: {err}");
+                std::process::exit(1);
+            }
+        }
     }
 
     let (startup, script, script_args) = match parse_startup_args(&args[1..]) {
@@ -1409,6 +1418,14 @@ fn build_pipeline_stages_from_word_segments(
         if args.is_empty() {
             return Err("empty command in pipeline".into());
         }
+        if is_builtin(&args[0]) {
+            stages.push(PipelineStage::Builtin {
+                args,
+                redirs,
+                assignments,
+            });
+            continue;
+        }
         if state.functions.contains_key(&args[0]) {
             for (name, value) in assignments {
                 state.set_var(&name, value);
@@ -1459,6 +1476,55 @@ fn run_function(
         FlowControl::Exit => Ok(RunResult::Exit),
         FlowControl::Return(code) => Ok(RunResult::Success(code == 0)),
         FlowControl::None => Ok(RunResult::Success(state.last_status == 0)),
+    }
+}
+
+fn run_builtin_worker(args: &[String]) -> Result<i32, String> {
+    let mut idx = 0;
+    let mut locals_path: Option<PathBuf> = None;
+    let mut assignments = Vec::new();
+    let mut cmd_args: Vec<String> = Vec::new();
+
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--locals" => {
+                idx += 1;
+                locals_path = args.get(idx).map(PathBuf::from);
+            }
+            "--assign" => {
+                idx += 1;
+                let value = args
+                    .get(idx)
+                    .ok_or_else(|| "builtin worker missing --assign value".to_string())?;
+                let (name, value) = parse_assignment(value)
+                    .ok_or_else(|| "builtin worker --assign expects NAME=VALUE".to_string())?;
+                assignments.push((name, value));
+            }
+            "--args" => {
+                idx += 1;
+                if idx < args.len() {
+                    cmd_args = args[idx..].to_vec();
+                }
+                break;
+            }
+            other => return Err(format!("unknown builtin worker flag '{other}'")),
+        }
+        idx += 1;
+    }
+
+    let locals_path =
+        locals_path.ok_or_else(|| "builtin worker missing --locals".to_string())?;
+    let mut state =
+        read_locals_file(&locals_path).map_err(|err| format!("failed to load locals: {err}"))?;
+    for (name, value) in assignments {
+        state.set_var(&name, value);
+    }
+    if cmd_args.is_empty() {
+        return Err("builtin worker missing args".into());
+    }
+    match run_builtin(&cmd_args, &mut state)? {
+        Some(_) => Ok(state.last_status),
+        None => Err("builtin worker missing builtin".into()),
     }
 }
 
@@ -1976,6 +2042,14 @@ fn build_pipeline_stages_from_segments(
         if args.is_empty() {
             return Err("empty command in pipeline".into());
         }
+        if is_builtin(&args[0]) {
+            stages.push(PipelineStage::Builtin {
+                args,
+                redirs,
+                assignments,
+            });
+            continue;
+        }
         if state.functions.contains_key(&args[0]) {
             for (name, value) in assignments {
                 state.set_var(&name, value);
@@ -2146,6 +2220,11 @@ enum PipelineStage {
     External(CommandSpec),
     Function(FunctionCall),
     Block(InlineBlock),
+    Builtin {
+        args: Vec<String>,
+        redirs: Redirections,
+        assignments: Vec<(String, String)>,
+    },
     Foreach {
         var: String,
         block: String,
@@ -2195,6 +2274,7 @@ fn run_pipeline_stages(
         matches!(
             stage,
             PipelineStage::Foreach { .. }
+                | PipelineStage::Builtin { .. }
                 | PipelineStage::Function(_)
                 | PipelineStage::Block(_)
         )
@@ -2227,6 +2307,26 @@ fn run_pipeline_stages(
                     cmd.env(key, value);
                 }
                 (cmd, spec.redirs.clone(), spec.args[0].clone())
+            }
+            PipelineStage::Builtin {
+                args,
+                redirs,
+                assignments,
+            } => {
+                let locals = locals_path
+                    .as_ref()
+                    .ok_or_else(|| "missing locals path for builtin".to_string())?;
+                let exe = env::current_exe()
+                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
+                let mut cmd = Command::new(exe);
+                cmd.arg("--builtin-worker")
+                    .arg("--locals")
+                    .arg(locals);
+                for (name, value) in assignments.iter() {
+                    cmd.arg("--assign").arg(format!("{name}={value}"));
+                }
+                cmd.arg("--args").args(args);
+                (cmd, redirs.clone(), args[0].clone())
             }
             PipelineStage::Function(spec) => {
                 let locals = locals_path
