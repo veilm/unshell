@@ -1,2 +1,2 @@
-alias cat2 cat
-echo foo | cat2
+alias foo "echo hi"
+alias | python3 -c 'import sys; data=sys.stdin.read(); print("foo" in data)'
