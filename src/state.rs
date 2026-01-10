@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -11,6 +11,7 @@ pub struct ShellOptions {
     pub subshells_trim_newline: bool,
     pub expansions_chars: HashSet<char>,
     pub expansions_handler: Vec<String>,
+    pub debug_log_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,7 @@ impl ShellState {
                 subshells_trim_newline: true,
                 expansions_chars: HashSet::new(),
                 expansions_handler: Vec::new(),
+                debug_log_path: None,
             },
             repl: ReplOptions {
                 vi_mode: true,
@@ -168,6 +170,13 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
     for value in state.options.expansions_handler.iter() {
         write_string(&mut file, value)?;
     }
+    match state.options.debug_log_path.as_ref() {
+        Some(path) => {
+            write_bool(&mut file, true)?;
+            write_string(&mut file, path)?;
+        }
+        None => write_bool(&mut file, false)?,
+    }
     write_u32(&mut file, state.locals_stack.len() as u32)?;
     for frame in state.locals_stack.iter() {
         write_u32(&mut file, frame.len() as u32)?;
@@ -229,6 +238,10 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
         let value = read_string(&mut file, "expansion handler")?;
         state.options.expansions_handler.push(value);
     }
+    let has_debug_log = read_bool(&mut file)?;
+    if has_debug_log {
+        state.options.debug_log_path = Some(read_string(&mut file, "debug log path")?);
+    }
     let locals_count = read_u32(&mut file)? as usize;
     state.locals_stack = Vec::with_capacity(locals_count);
     for _ in 0..locals_count {
@@ -273,7 +286,7 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
 }
 
 const STATE_MAGIC: &[u8] = b"USHSTATE";
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
     let (path, mut file) = create_temp_file("state")?;
@@ -369,6 +382,13 @@ pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFi
     write_u64(&mut file, state.repl.generation)?;
     write_bool(&mut file, state.last_output_newline)?;
     write_bool(&mut file, state.needs_cursor_check)?;
+    match state.options.debug_log_path.as_ref() {
+        Some(path) => {
+            write_bool(&mut file, true)?;
+            write_string(&mut file, path)?;
+        }
+        None => write_bool(&mut file, false)?,
+    }
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -384,7 +404,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         ));
     }
     let version = read_u32(&mut file)?;
-    if version != STATE_VERSION {
+    if version != 1 && version != STATE_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "state file version mismatch",
@@ -486,8 +506,63 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
     state.repl.generation = read_u64(&mut file)?;
     state.last_output_newline = read_bool(&mut file)?;
     state.needs_cursor_check = read_bool(&mut file)?;
+    if version >= 2 {
+        let has_debug_log = read_bool(&mut file)?;
+        if has_debug_log {
+            state.options.debug_log_path = Some(read_string(&mut file, "debug log path")?);
+        }
+    }
 
     Ok(state)
+}
+
+pub fn debug_log_line_to(path: Option<&str>, message: &str) {
+    let Some(path) = path else {
+        return;
+    };
+    if path.trim().is_empty() {
+        return;
+    }
+    let mut file = match OpenOptions::new().create(true).append(true).open(path) {
+        Ok(file) => file,
+        Err(_) => return,
+    };
+    let _ = writeln!(file, "{message}");
+}
+
+pub fn format_command(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| format_log_token(arg))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn format_function_body(body: &FunctionBody) -> String {
+    match body {
+        FunctionBody::Inline(body) => sanitize_log_token(body.trim()),
+        FunctionBody::Block(lines) => lines
+            .iter()
+            .map(|line| sanitize_log_token(line.trim()))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ; "),
+    }
+}
+
+fn format_log_token(token: &str) -> String {
+    let sanitized = sanitize_log_token(token);
+    if sanitized.is_empty() || sanitized.chars().any(|ch| ch.is_whitespace()) {
+        format!("\"{}\"", sanitized.replace('"', "\\\""))
+    } else {
+        sanitized
+    }
+}
+
+fn sanitize_log_token(token: &str) -> String {
+    token
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
 }
 
 pub fn lookup_var(state: &ShellState, name: &str) -> String {

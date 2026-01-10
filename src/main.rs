@@ -24,8 +24,9 @@ use crate::parser::{
     split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
 };
 use crate::state::{
-    lookup_var, read_locals_file, read_shell_state_file, write_locals_file, write_shell_state_file,
-    FunctionBody, FunctionDef, ShellState,
+    debug_log_line_to, format_command, format_function_body, lookup_var, read_locals_file,
+    read_shell_state_file, write_locals_file, write_shell_state_file, FunctionBody, FunctionDef,
+    ShellState,
 };
 use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
 #[cfg(feature = "repl")]
@@ -36,6 +37,30 @@ use crate::term::cursor_column;
 pub(crate) const DEFAULT_PROMPT: &str = "unshell> ";
 const FUNCTION_MAX_DEPTH: usize = 64;
 const REFRESH_NOTICE_ENV: &str = "USH_REFRESH_NOTICE";
+
+fn debug_log_run(path: Option<&str>, command: &str) {
+    debug_log_line_to(path, &format!("run: {command}"));
+}
+
+fn debug_log_exit(path: Option<&str>, command: &str, status: i32) {
+    debug_log_line_to(path, &format!("exit: {command} -> {status}"));
+}
+
+fn debug_log_alias(path: Option<&str>, name: &str, value: &str, global: bool) {
+    if global {
+        debug_log_line_to(path, &format!("alias(global): {name} -> {value}"));
+    } else {
+        debug_log_line_to(path, &format!("alias: {name} -> {value}"));
+    }
+}
+
+fn debug_log_function(path: Option<&str>, name: &str, body: &str) {
+    debug_log_line_to(path, &format!("function: {name} -> {body}"));
+}
+
+fn debug_log_source(path: Option<&str>, target: &str) {
+    debug_log_line_to(path, &format!("source: {target}"));
+}
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -449,6 +474,7 @@ fn run_command_with_state(command: &str, mut state: ShellState) -> io::Result<()
 }
 
 fn source_file(path: &Path, state: &mut ShellState) -> Result<FlowControl, String> {
+    debug_log_source(state.options.debug_log_path.as_deref(), &path.display().to_string());
     let file = File::open(path).map_err(|err| err.to_string())?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader
@@ -1334,6 +1360,7 @@ fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, S
         return Ok(tokens);
     }
 
+    let log_path = state.options.debug_log_path.clone();
     let mut current = tokens;
     let recursive = state.options.aliases_recursive;
     let mut depth = 0;
@@ -1349,6 +1376,7 @@ fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, S
 
             if idx == 0 {
                 if let Some(alias) = state.aliases.get(token) {
+                    debug_log_alias(log_path.as_deref(), token, &alias.value, false);
                     let alias_tokens = parse_args(&alias.value)?;
                     next.extend(alias_tokens);
                     changed = true;
@@ -1358,6 +1386,7 @@ fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, S
 
             if let Some(alias) = state.aliases.get(token) {
                 if alias.global {
+                    debug_log_alias(log_path.as_deref(), token, &alias.value, true);
                     let alias_tokens = parse_args(&alias.value)?;
                     next.extend(alias_tokens);
                     changed = true;
@@ -1577,6 +1606,14 @@ fn run_function(
     if state.locals_stack.len() >= FUNCTION_MAX_DEPTH {
         return Err("function call depth exceeded".into());
     }
+    let log_path = state.options.debug_log_path.clone();
+    let cmd_text = format_command(args);
+    debug_log_run(log_path.as_deref(), &cmd_text);
+    debug_log_function(
+        log_path.as_deref(),
+        &args[0],
+        &format_function_body(&func.body),
+    );
     state.positional_stack.push(state.positional.clone());
     state.positional = args[1..].to_vec();
     state.locals_stack.push(HashMap::new());
@@ -1594,11 +1631,13 @@ fn run_function(
     state.positional = state.positional_stack.pop().unwrap_or_default();
     state.locals_stack.pop();
 
-    match flow? {
-        FlowControl::Exit => Ok(RunResult::Exit),
-        FlowControl::Return(code) => Ok(RunResult::Success(code == 0)),
-        FlowControl::None => Ok(RunResult::Success(state.last_status == 0)),
-    }
+    let result = match flow? {
+        FlowControl::Exit => RunResult::Exit,
+        FlowControl::Return(code) => RunResult::Success(code == 0),
+        FlowControl::None => RunResult::Success(state.last_status == 0),
+    };
+    debug_log_exit(log_path.as_deref(), &cmd_text, state.last_status);
+    Ok(result)
 }
 
 fn run_builtin_worker(args: &[String]) -> Result<i32, String> {
@@ -1715,6 +1754,21 @@ fn unset_var(state: &mut ShellState, name: &str) {
 }
 
 fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
+    let log_path = state.options.debug_log_path.clone();
+    let cmd_text = format_command(args);
+    debug_log_run(log_path.as_deref(), &cmd_text);
+    let result = run_builtin_inner(args, state);
+    if let Ok(Some(result)) = &result {
+        let status = match result {
+            RunResult::Return(code) => *code,
+            RunResult::Exit | RunResult::Success(_) => state.last_status,
+        };
+        debug_log_exit(log_path.as_deref(), &cmd_text, status);
+    }
+    result
+}
+
+fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
     let name = args.first().map(String::as_str).unwrap_or("");
     match name {
         "cd" => {
@@ -1885,6 +1939,19 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                         return Err("set: expansions.handler expects a command".into());
                     }
                     state.options.expansions_handler = args[2..].to_vec();
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
+                "debug.log" => {
+                    if args.len() != 3 {
+                        return Err("set: debug.log expects PATH or 'off'".into());
+                    }
+                    let value = args[2].as_str();
+                    if value == "off" {
+                        state.options.debug_log_path = None;
+                    } else {
+                        state.options.debug_log_path = Some(value.to_string());
+                    }
                     state.last_status = 0;
                     Ok(Some(RunResult::Success(true)))
                 }
@@ -2226,6 +2293,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
     let mut capture_read: Option<File> = None;
     let mut pipeline_pgrp: Option<libc::pid_t> = None;
     let mut fg_guard: Option<ForegroundGuard> = None;
+    let log_path = state.options.debug_log_path.clone();
 
     let mut child_count = 0usize;
     for (idx, spec) in commands.iter().enumerate() {
@@ -2237,6 +2305,8 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         for (key, value) in spec.env_overrides.iter() {
             cmd.env(key, value);
         }
+        let cmd_text = format_command(&spec.args);
+        debug_log_run(log_path.as_deref(), &cmd_text);
 
         if let Some(input_path) = &spec.redirs.stdin {
             let file = open_input_file(input_path)?;
@@ -2332,7 +2402,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
                 fg_guard = ForegroundGuard::new(desired_pgrp);
             }
             child_count += 1;
-            children.push((spec.args[0].clone(), child));
+            children.push((cmd_text, child));
         }
     }
 
@@ -2354,9 +2424,11 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         let status = child
             .wait()
             .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
+        let code = exit_status_code(&status);
+        debug_log_exit(log_path.as_deref(), &name, code);
         if idx + 1 == commands.len() {
             last_success = status.success();
-            last_status = exit_status_code(&status);
+            last_status = code;
         }
     }
     state.last_status = last_status;
@@ -2436,16 +2508,17 @@ fn run_pipeline_stages(
     };
 
     let mut block_guards = Vec::new();
-    let mut children = Vec::new();
+    let mut children: Vec<(String, Option<String>, std::process::Child)> = Vec::new();
     let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
     let mut capture_read: Option<File> = None;
     let mut pipeline_pgrp: Option<libc::pid_t> = None;
     let mut fg_guard: Option<ForegroundGuard> = None;
+    let log_path = state.options.debug_log_path.clone();
 
     for (idx, stage) in stages.iter().enumerate() {
         let is_last = idx + 1 == stages.len();
-        let (mut cmd, redirs, name) = match stage {
+        let (mut cmd, redirs, name, log_name) = match stage {
             PipelineStage::External(spec) => {
                 let mut cmd = Command::new(&spec.args[0]);
                 if spec.args.len() > 1 {
@@ -2454,7 +2527,14 @@ fn run_pipeline_stages(
                 for (key, value) in spec.env_overrides.iter() {
                     cmd.env(key, value);
                 }
-                (cmd, spec.redirs.clone(), spec.args[0].clone())
+                let cmd_text = format_command(&spec.args);
+                debug_log_run(log_path.as_deref(), &cmd_text);
+                (
+                    cmd,
+                    spec.redirs.clone(),
+                    spec.args[0].clone(),
+                    Some(cmd_text),
+                )
             }
             PipelineStage::Builtin {
                 args,
@@ -2474,7 +2554,7 @@ fn run_pipeline_stages(
                     cmd.arg("--assign").arg(format!("{name}={value}"));
                 }
                 cmd.arg("--args").args(args);
-                (cmd, redirs.clone(), args[0].clone())
+                (cmd, redirs.clone(), args[0].clone(), None)
             }
             PipelineStage::Function(spec) => {
                 let locals = locals_path
@@ -2490,7 +2570,7 @@ fn run_pipeline_stages(
                     .arg(&spec.name)
                     .arg("--args")
                     .args(&spec.args);
-                (cmd, spec.redirs.clone(), spec.name.clone())
+                (cmd, spec.redirs.clone(), spec.name.clone(), None)
             }
             PipelineStage::Block(spec) => {
                 let locals = locals_path
@@ -2507,7 +2587,7 @@ fn run_pipeline_stages(
                     .arg(block_path)
                     .arg("--locals")
                     .arg(locals);
-                (cmd, spec.redirs.clone(), "block".to_string())
+                (cmd, spec.redirs.clone(), "block".to_string(), None)
             }
             PipelineStage::Foreach { var, block, inline } => {
                 let exe = env::current_exe()
@@ -2529,7 +2609,7 @@ fn run_pipeline_stages(
                 if *inline {
                     cmd.arg("--inline");
                 }
-                (cmd, Redirections::default(), "foreach".to_string())
+                (cmd, Redirections::default(), "foreach".to_string(), None)
             }
         };
 
@@ -2626,7 +2706,7 @@ fn run_pipeline_stages(
             if fg_guard.is_none() && state.interactive {
                 fg_guard = ForegroundGuard::new(desired_pgrp);
             }
-            children.push((name, child));
+            children.push((name, log_name, child));
         }
     }
 
@@ -2644,10 +2724,14 @@ fn run_pipeline_stages(
 
     let mut last_success = true;
     let mut last_status = if children.is_empty() { 127 } else { 0 };
-    for (idx, (name, mut child)) in children.into_iter().enumerate() {
+    for (idx, (name, log_name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
             .map_err(|err| format!("failed to wait for '{}': {err}", name))?;
+        if let Some(cmd_text) = log_name.as_ref() {
+            let code = exit_status_code(&status);
+            debug_log_exit(log_path.as_deref(), cmd_text, code);
+        }
         if idx + 1 == stages.len() {
             last_success = status.success();
             last_status = exit_status_code(&status);

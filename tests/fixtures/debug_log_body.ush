@@ -1,0 +1,1 @@
+echo from-source $1 out>n
