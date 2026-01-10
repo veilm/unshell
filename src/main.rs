@@ -120,9 +120,19 @@ fn main() {
             }
             Err(err) => eprintln!("unshell: failed to load startup: {err}"),
         }
-        if let Err(err) = run_script_with_state(&script, state) {
-            eprintln!("unshell: failed to run script '{}': {err}", script);
-            std::process::exit(1);
+        match script {
+            StartupScript::File(path) => {
+                if let Err(err) = run_script_with_state(&path, state) {
+                    eprintln!("unshell: failed to run script '{}': {err}", path);
+                    std::process::exit(1);
+                }
+            }
+            StartupScript::Command(command) => {
+                if let Err(err) = run_command_with_state(&command, state) {
+                    eprintln!("unshell: failed to run command: {err}");
+                    std::process::exit(1);
+                }
+            }
         }
         return;
     }
@@ -308,7 +318,14 @@ struct StartupConfig {
     restore_path: Option<String>,
 }
 
-fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>, Vec<String>), String> {
+enum StartupScript {
+    File(String),
+    Command(String),
+}
+
+fn parse_startup_args(
+    args: &[String],
+) -> Result<(StartupConfig, Option<StartupScript>, Vec<String>), String> {
     let mut config = StartupConfig::default();
     let mut idx = 0;
     let mut script = None;
@@ -334,10 +351,16 @@ fn parse_startup_args(args: &[String]) -> Result<(StartupConfig, Option<String>,
             idx += 2;
             continue;
         }
+        if arg == "-c" {
+            let value = args.get(idx + 1).ok_or("-c requires a command")?;
+            script = Some(StartupScript::Command(value.clone()));
+            script_args = args[idx + 2..].to_vec();
+            break;
+        }
         if arg.starts_with('-') {
             return Err(format!("unknown option '{arg}'"));
         }
-        script = Some(arg.clone());
+        script = Some(StartupScript::File(arg.clone()));
         script_args = args[idx + 1..].to_vec();
         break;
     }
@@ -398,6 +421,30 @@ fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
         FlowControl::None => {}
     }
 
+    Ok(())
+}
+
+fn run_command_with_state(command: &str, mut state: ShellState) -> io::Result<()> {
+    let lines: Vec<String> = command.lines().map(|line| line.to_string()).collect();
+    let mut ctx = ScriptContext {
+        lines,
+        state: &mut state,
+    };
+    match ctx
+        .execute_with_exit()
+        .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+    {
+        FlowControl::Exit => {
+            std::process::exit(state.last_status);
+        }
+        FlowControl::Return(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "return not allowed outside functions",
+            ));
+        }
+        FlowControl::None => {}
+    }
     Ok(())
 }
 

@@ -359,6 +359,7 @@ Flags:
 ```bash
 ush --norc          # skip all startup files
 ush --rc /path/to/init  # only source this file
+ush -c "cmd" [args...]  # run a command string
 ush --restore /tmp/ush-state  # internal: restore repl state without sourcing rc
 ```
 

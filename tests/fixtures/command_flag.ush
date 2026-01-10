@@ -1,0 +1,1 @@
+./target/debug/ush --norc -c 'echo "one=$1 two=$2 count=$#"; echo "all=$*"' alpha beta gamma
