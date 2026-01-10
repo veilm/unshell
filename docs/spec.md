@@ -259,7 +259,7 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-- The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords.
+- The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `unset`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords.
 - Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"
@@ -269,6 +269,7 @@ cd /srv/www
 - **Current implementation:**
   - `cd` defaults to `$HOME` and treats `-` as a literal path (no `OLDPWD` shortcut).
   - `export` sets both shell-local and process environment variables.
+  - `unset NAME...` removes the nearest local binding if present, otherwise clears the shell-local and environment variable.
   - Alias values are expanded at definition time using normal quoting rules (use single quotes or escapes to preserve `$var`).
   - Aliases expand at command start plus optional global aliases for any token (`alias -g`).
 

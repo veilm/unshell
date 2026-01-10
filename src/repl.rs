@@ -566,6 +566,7 @@ fn builtin_completion_names() -> &'static [&'static str] {
         "set",
         "source",
         "unalias",
+        "unset",
     ]
 }
 
