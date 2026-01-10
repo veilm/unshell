@@ -1644,6 +1644,7 @@ fn is_builtin(name: &str) -> bool {
             | "unalias"
             | "set"
             | "export"
+            | "unset"
             | "local"
             | "return"
             | "exit"
@@ -1652,6 +1653,18 @@ fn is_builtin(name: &str) -> bool {
             | "eval"
             | "refresh-repl"
     )
+}
+
+fn unset_var(state: &mut ShellState, name: &str) {
+    for frame in state.locals_stack.iter_mut().rev() {
+        if frame.remove(name).is_some() {
+            return;
+        }
+    }
+    state.vars.remove(name);
+    unsafe {
+        env::remove_var(name);
+    }
 }
 
 fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResult>, String> {
@@ -1695,6 +1708,19 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
                 unsafe {
                     env::set_var(item, value);
                 }
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Success(true)))
+        }
+        "unset" => {
+            if args.len() == 1 {
+                return Err("unset: missing arguments".into());
+            }
+            for item in &args[1..] {
+                if !is_valid_var_name(item) {
+                    return Err(format!("unset: invalid name '{item}'"));
+                }
+                unset_var(state, item);
             }
             state.last_status = 0;
             Ok(Some(RunResult::Success(true)))

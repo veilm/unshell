@@ -1,0 +1,4 @@
+before:global
+inner:local
+after:global
+final:

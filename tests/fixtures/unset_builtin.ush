@@ -1,0 +1,10 @@
+export FOO=global
+echo before:$FOO
+def check
+	local FOO=local
+	echo inner:$FOO
+	unset FOO
+	echo after:$FOO
+check
+unset FOO
+echo final:$FOO
