@@ -108,6 +108,7 @@ if for some reason you don't need interactive usage and want to skip the
 ```bash
 ush                 # repl
 ush path/to/script  # run a script file line-by-line
+ush -c "cmd" [args...]  # run a command string
 ush --norc          # skip startup files
 ush --rc path       # source only this init file
 ```
