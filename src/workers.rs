@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::state::{
-    create_temp_file, read_locals_file, write_locals_file, FunctionBody, FunctionDef, ShellState,
-    TempFileGuard,
+    create_temp_file, debug_log_line_to, format_command, format_function_body, read_locals_file,
+    write_locals_file, FunctionBody, FunctionDef, ShellState, TempFileGuard,
 };
 use crate::{execute_inline_block, FlowControl, ScriptContext};
 
@@ -337,6 +337,17 @@ fn run_function_in_worker(
     if state.locals_stack.len() >= FUNCTION_MAX_DEPTH {
         return Err("function call depth exceeded".into());
     }
+    let log_path = state.options.debug_log_path.clone();
+    let cmd_text = format_command(args);
+    debug_log_line_to(log_path.as_deref(), &format!("run: {cmd_text}"));
+    debug_log_line_to(
+        log_path.as_deref(),
+        &format!(
+            "function: {} -> {}",
+            args[0],
+            format_function_body(&func.body)
+        ),
+    );
     state.positional_stack.push(state.positional.clone());
     state.positional = args[1..].to_vec();
     state.locals_stack.push(HashMap::new());
@@ -360,6 +371,10 @@ fn run_function_in_worker(
         FlowControl::None => state.last_status,
     };
 
+    debug_log_line_to(
+        log_path.as_deref(),
+        &format!("exit: {cmd_text} -> {code}"),
+    );
     Ok(code)
 }
 

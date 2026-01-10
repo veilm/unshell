@@ -1,0 +1,16 @@
+log=$[pwd]/tests/fixtures/debug_log.txt
+true > $log
+set debug.log $log
+
+alias hi "echo hello"
+
+def greet
+	echo "greet-$1"
+
+source tests/fixtures/debug_log_body.ush arg1
+hi out>n
+greet world out>n
+false out>n
+echo done out>n
+set debug.log off
+cat $log

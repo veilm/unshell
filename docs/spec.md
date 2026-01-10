@@ -310,7 +310,14 @@ echo today # expands to: echo [date +%F]
 set aliases.recursive false
 set aliases.recursive true
 ```
-**Current implementation:** `aliases.recursive` controls whether alias expansion repeats until it stabilizes.
+- Debug logging writes trace output to a file when enabled:
+```bash
+set debug.log /tmp/ush-debug.log
+```
+- **Current implementation:**
+  - `aliases.recursive` controls whether alias expansion repeats until it stabilizes.
+  - `debug.log PATH` enables debug logging to the given file; `debug.log off` disables it.
+  - Logs include command start/exit, alias expansion, function bodies, and `source` activity.
 
 ### REPL (Optional)
 - The interactive prompt is provided by Rustyline when built with the default `repl` feature.

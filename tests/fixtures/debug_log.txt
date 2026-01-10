@@ -1,0 +1,22 @@
+run: alias hi "echo hello"
+exit: alias hi "echo hello" -> 0
+run: source tests/fixtures/debug_log_body.ush arg1
+source: tests/fixtures/debug_log_body.ush
+run: echo from-source arg1
+exit: echo from-source arg1 -> 0
+exit: source tests/fixtures/debug_log_body.ush arg1 -> 0
+alias: hi -> echo hello
+alias: hi -> echo hello
+run: echo hello
+exit: echo hello -> 0
+run: greet world
+function: greet -> echo "greet-$1"
+run: echo greet-world
+exit: echo greet-world -> 0
+exit: greet world -> 0
+run: false
+exit: false -> 1
+run: echo done
+exit: echo done -> 0
+run: set debug.log off
+exit: set debug.log off -> 0
