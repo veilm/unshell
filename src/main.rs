@@ -130,6 +130,81 @@ fn main() {
     run_repl(&startup);
 }
 
+fn report_exec_error(cmd: &str, err: &io::Error) {
+    eprintln!("unshell: failed to execute '{cmd}': {err}");
+    if err.kind() != io::ErrorKind::NotFound {
+        return;
+    }
+    let Some(path) = resolve_command_path(cmd) else {
+        return;
+    };
+    let Ok(line) = read_shebang_line(&path) else {
+        return;
+    };
+    let Some(interpreter) = parse_shebang_interpreter(&line) else {
+        return;
+    };
+    if !Path::new(&interpreter).exists() {
+        eprintln!(
+            "unshell: '{}' uses '{interpreter}', but the interpreter was not found",
+            path.display()
+        );
+    }
+}
+
+fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
+    if cmd.contains('/') {
+        let path = PathBuf::from(cmd);
+        return if is_executable_file(&path) { Some(path) } else { None };
+    }
+    let path_var = env::var("PATH").ok()?;
+    for dir in path_var.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = Path::new(dir).join(cmd);
+        if is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn read_shebang_line(path: &Path) -> io::Result<String> {
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line)?;
+    Ok(line)
+}
+
+fn parse_shebang_interpreter(line: &str) -> Option<String> {
+    let trimmed = line.trim_end();
+    let rest = trimmed.strip_prefix("#!")?;
+    let rest = rest.trim_start();
+    let mut parts = rest.split_whitespace();
+    let first = parts.next()?;
+    Some(first.to_string())
+}
+
 #[cfg(feature = "repl")]
 fn run_repl(startup: &StartupConfig) {
     run_repl_with_state(startup, ShellState::new());
@@ -2165,7 +2240,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
-                eprintln!("unshell: failed to execute '{}': {err}", spec.args[0]);
+                report_exec_error(&spec.args[0], &err);
                 prev_read = None;
                 None
             }
@@ -2460,7 +2535,7 @@ fn run_pipeline_stages(
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
-                eprintln!("unshell: failed to execute '{}': {err}", name);
+                report_exec_error(&name, &err);
                 prev_read = None;
                 None
             }

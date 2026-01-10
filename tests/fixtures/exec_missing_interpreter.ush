@@ -1,0 +1,8 @@
+tmp="/tmp/unshell-bad-shebang-fixture"
+rm -rf $tmp
+mkdir -p $tmp
+printf "#!/no/such/interpreter\n" > $tmp/bad
+printf "echo hi\n" >> $tmp/bad
+chmod +x $tmp/bad
+$tmp/bad
+rm -rf $tmp

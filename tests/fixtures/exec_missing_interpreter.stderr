@@ -1,0 +1,2 @@
+unshell: failed to execute '/tmp/unshell-bad-shebang-fixture/bad': No such file or directory (os error 2)
+unshell: '/tmp/unshell-bad-shebang-fixture/bad' uses '/no/such/interpreter', but the interpreter was not found
