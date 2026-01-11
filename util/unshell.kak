@@ -38,7 +38,7 @@ define-command -hidden unshell-indent-on-new-line %<
         try %! execute-keys -draft , k x <a-k> \{\h*$ <ret> j i<tab> !
         # indent after block keywords without inline {
         try %!
-            execute-keys -draft , k x <a-k> ^\h*(if|elif|else|for|foreach|def|function|fn)\b[^{]*$ <ret> j i<tab>
+            execute-keys -draft , k x <a-k> ^\h*(if|elif|else|for|foreach|each|while|def|function|fn)\b[^{]*$ <ret> j i<tab>
         !
     >
 >
@@ -79,7 +79,7 @@ provide-module unshell %@
 
 add-highlighter shared/unshell regions
 add-highlighter shared/unshell/code default-region group
-add-highlighter shared/unshell/code/keyword regex %{\b(if|else|elif|for|each|foreach|in|def|function|fn)\b} 0:keyword
+add-highlighter shared/unshell/code/keyword regex %{\b(if|else|elif|for|each|foreach|while|in|def|function|fn)\b} 0:keyword
 add-highlighter shared/unshell/double_string region %{(?<!\\)(?:\\\\)*\K"} %{(?<!\\)(?:\\\\)*"} group
 add-highlighter shared/unshell/single_string region %{(?<!\\)(?:\\\\)*\K'} %{'} fill string
 add-highlighter shared/unshell/comment region (?<!\\)(?:\\\\)*(?:^|\h)\K# '$' fill comment
@@ -98,10 +98,10 @@ add-highlighter shared/unshell/code/assignment regex ((?<![-:])\b\w+)= 1:variabl
 add-highlighter shared/unshell/code/operators regex %{(&&|\|\||\||;)} 0:operator
 
 try %{
-    declare-option str-list unshell_static_words if else elif for foreach in def function fn alias unalias cd set export local return exit builtin eval
+    declare-option str-list unshell_static_words if else elif for foreach each while in def function fn alias unalias cd set export local return exit builtin eval break continue
 }
 
 # add-highlighter shared/unshell/code/keyword regex \b(if|else|elif|for|foreach|in|def|function|fn)\b 0:keyword
-add-highlighter shared/unshell/code/builtin regex %{\b(alias|unalias|cd|set|export|local|return|exit|builtin|eval)\b} 0:builtin
+add-highlighter shared/unshell/code/builtin regex %{\b(alias|unalias|cd|set|export|local|return|exit|builtin|eval|break|continue)\b} 0:builtin
 
 @

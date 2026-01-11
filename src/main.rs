@@ -143,6 +143,14 @@ fn main() {
                 eprintln!("unshell: return not allowed in startup");
                 std::process::exit(1);
             }
+            Ok(FlowControl::Break) => {
+                eprintln!("unshell: break not allowed in startup");
+                std::process::exit(1);
+            }
+            Ok(FlowControl::Continue) => {
+                eprintln!("unshell: continue not allowed in startup");
+                std::process::exit(1);
+            }
             Err(err) => eprintln!("unshell: failed to load startup: {err}"),
         }
         match script {
@@ -254,6 +262,12 @@ fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
         Ok(FlowControl::Return(_)) => {
             eprintln!("unshell: return not allowed in startup");
         }
+        Ok(FlowControl::Break) => {
+            eprintln!("unshell: break not allowed in startup");
+        }
+        Ok(FlowControl::Continue) => {
+            eprintln!("unshell: continue not allowed in startup");
+        }
         Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
     maybe_print_refresh_notice(&mut state);
@@ -276,6 +290,12 @@ fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
         Ok(FlowControl::Exit) => return,
         Ok(FlowControl::Return(_)) => {
             eprintln!("unshell: return not allowed in startup");
+        }
+        Ok(FlowControl::Break) => {
+            eprintln!("unshell: break not allowed in startup");
+        }
+        Ok(FlowControl::Continue) => {
+            eprintln!("unshell: continue not allowed in startup");
         }
         Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
@@ -443,6 +463,18 @@ fn run_script_with_state(path: &str, mut state: ShellState) -> io::Result<()> {
                 "return not allowed outside functions",
             ));
         }
+        FlowControl::Break => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "break not allowed outside loops",
+            ));
+        }
+        FlowControl::Continue => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "continue not allowed outside loops",
+            ));
+        }
         FlowControl::None => {}
     }
 
@@ -466,6 +498,18 @@ fn run_command_with_state(command: &str, mut state: ShellState) -> io::Result<()
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "return not allowed outside functions",
+            ));
+        }
+        FlowControl::Break => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "break not allowed outside loops",
+            ));
+        }
+        FlowControl::Continue => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "continue not allowed outside loops",
             ));
         }
         FlowControl::None => {}
@@ -621,6 +665,8 @@ fn prompt_command_output(command: &str, state: &mut ShellState) -> Result<String
     match flow {
         FlowControl::Exit => Err("exit not allowed in prompt".into()),
         FlowControl::Return(_) => Err("return not allowed in prompt".into()),
+        FlowControl::Break => Err("break not allowed in prompt".into()),
+        FlowControl::Continue => Err("continue not allowed in prompt".into()),
         FlowControl::None => {
             trim_trailing_newline(&mut output);
             Ok(output)
@@ -638,6 +684,14 @@ pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
         Ok(FlowControl::Exit) => false,
         Ok(FlowControl::Return(_)) => {
             eprintln!("unshell: return not allowed outside functions");
+            true
+        }
+        Ok(FlowControl::Break) => {
+            eprintln!("unshell: break not allowed outside loops");
+            true
+        }
+        Ok(FlowControl::Continue) => {
+            eprintln!("unshell: continue not allowed outside loops");
             true
         }
         Ok(FlowControl::None) => true,
@@ -698,6 +752,8 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
             match run_expanded_tokens(&expanded, state) {
                 Ok(FlowControl::Exit) => return FlowControl::Exit,
                 Ok(FlowControl::Return(code)) => return FlowControl::Return(code),
+                Ok(FlowControl::Break) => return FlowControl::Break,
+                Ok(FlowControl::Continue) => return FlowControl::Continue,
                 Ok(FlowControl::None) => {
                     last_success = state.last_status == 0;
                 }
@@ -732,6 +788,8 @@ fn run_expanded_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Flo
             match run_pipeline_tokens(&segment, state)? {
                 RunResult::Exit => return Ok(FlowControl::Exit),
                 RunResult::Return(code) => return Ok(FlowControl::Return(code)),
+                RunResult::Break => return Ok(FlowControl::Break),
+                RunResult::Continue => return Ok(FlowControl::Continue),
                 RunResult::Success(success) => last_success = success,
             }
         }
@@ -1450,6 +1508,8 @@ pub(crate) enum RunResult {
     Success(bool),
     Exit,
     Return(i32),
+    Break,
+    Continue,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1457,6 +1517,8 @@ pub(crate) enum FlowControl {
     None,
     Exit,
     Return(i32),
+    Break,
+    Continue,
 }
 
 fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<RunResult, String> {
@@ -1570,6 +1632,9 @@ fn build_pipeline_stages_from_word_segments(
             return Err("empty command in pipeline".into());
         }
         if is_builtin(&args[0]) {
+            if matches!(args[0].as_str(), "break" | "continue") {
+                return Err(format!("{} not allowed in pipeline", args[0]));
+            }
             stages.push(PipelineStage::Builtin {
                 args,
                 redirs,
@@ -1634,6 +1699,8 @@ fn run_function(
     let result = match flow? {
         FlowControl::Exit => RunResult::Exit,
         FlowControl::Return(code) => RunResult::Success(code == 0),
+        FlowControl::Break => RunResult::Break,
+        FlowControl::Continue => RunResult::Continue,
         FlowControl::None => RunResult::Success(state.last_status == 0),
     };
     debug_log_exit(log_path.as_deref(), &cmd_text, state.last_status);
@@ -1738,6 +1805,8 @@ fn is_builtin(name: &str) -> bool {
             | "source"
             | "eval"
             | "refresh-repl"
+            | "break"
+            | "continue"
     )
 }
 
@@ -1761,7 +1830,10 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
     if let Ok(Some(result)) = &result {
         let status = match result {
             RunResult::Return(code) => *code,
-            RunResult::Exit | RunResult::Success(_) => state.last_status,
+            RunResult::Exit
+            | RunResult::Success(_)
+            | RunResult::Break
+            | RunResult::Continue => state.last_status,
         };
         debug_log_exit(log_path.as_deref(), &cmd_text, status);
     }
@@ -1839,6 +1911,20 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
             };
             state.last_status = code;
             Ok(Some(RunResult::Exit))
+        }
+        "break" => {
+            if args.len() != 1 {
+                return Err("break: too many arguments".into());
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Break))
+        }
+        "continue" => {
+            if args.len() != 1 {
+                return Err("continue: too many arguments".into());
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Continue))
         }
         "local" => {
             if args.len() != 2 {
@@ -2064,6 +2150,8 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
             match ctx.execute_with_exit()? {
                 FlowControl::Exit => return Ok(Some(RunResult::Exit)),
                 FlowControl::Return(code) => return Ok(Some(RunResult::Return(code))),
+                FlowControl::Break => return Ok(Some(RunResult::Break)),
+                FlowControl::Continue => return Ok(Some(RunResult::Continue)),
                 FlowControl::None => {}
             }
             Ok(Some(RunResult::Success(true)))
@@ -2081,6 +2169,8 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
                 Ok(FlowControl::None) => Ok(Some(RunResult::Success(state.last_status == 0))),
                 Ok(FlowControl::Exit) => Ok(Some(RunResult::Exit)),
                 Ok(FlowControl::Return(code)) => Ok(Some(RunResult::Return(code))),
+                Ok(FlowControl::Break) => Ok(Some(RunResult::Break)),
+                Ok(FlowControl::Continue) => Ok(Some(RunResult::Continue)),
                 Err(err) => Err(format!("source: failed to read '{path}': {err}")),
             }
         }
@@ -2258,6 +2348,9 @@ fn build_pipeline_stages_from_segments(
             return Err("empty command in pipeline".into());
         }
         if is_builtin(&args[0]) {
+            if matches!(args[0].as_str(), "break" | "continue") {
+                return Err(format!("{} not allowed in pipeline", args[0]));
+            }
             stages.push(PipelineStage::Builtin {
                 args,
                 redirs,
@@ -2988,6 +3081,8 @@ pub(crate) fn execute_inline_block(
     match process_line_raw(trimmed, state) {
         FlowControl::Exit => Err("exit not allowed in inline block".into()),
         FlowControl::Return(code) => Ok(FlowControl::Return(code)),
+        FlowControl::Break => Ok(FlowControl::Break),
+        FlowControl::Continue => Ok(FlowControl::Continue),
         FlowControl::None => Ok(FlowControl::None),
     }
 }
@@ -3066,6 +3161,7 @@ impl<'a> ScriptContext<'a> {
             let expanded = self.expand_aliases_with_context(&trimmed, idx + 1, &line)?;
             let use_expanded = expanded.starts_with("if ")
                 || expanded.starts_with("for ")
+                || expanded.starts_with("while ")
                 || expanded.starts_with("def ")
                 || parse_foreach_line(&expanded).is_some();
             let trimmed = if use_expanded { expanded } else { trimmed };
@@ -3099,6 +3195,18 @@ impl<'a> ScriptContext<'a> {
                                 flow: FlowControl::Return(code),
                             })
                         }
+                        RunResult::Break => {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Break,
+                            })
+                        }
+                        RunResult::Continue => {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Continue,
+                            })
+                        }
                     }
                 } else {
                     false
@@ -3106,13 +3214,27 @@ impl<'a> ScriptContext<'a> {
 
                 if let Some(block) = brace_block {
                     if run_child {
-                        if let FlowControl::Return(code) =
-                            execute_inline_block(&block, self.state)?
-                        {
-                            return Ok(BlockResult {
-                                next: idx + 1,
-                                flow: FlowControl::Return(code),
-                            });
+                        match execute_inline_block(&block, self.state)? {
+                            FlowControl::Return(code) => {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Return(code),
+                                });
+                            }
+                            FlowControl::Break => {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Break,
+                                });
+                            }
+                            FlowControl::Continue => {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Continue,
+                                });
+                            }
+                            FlowControl::None => {}
+                            FlowControl::Exit => {}
                         }
                     }
                     let (exit, next_idx, handled) = self.handle_else_chain_tail(
@@ -3159,6 +3281,18 @@ impl<'a> ScriptContext<'a> {
                                 return Ok(BlockResult {
                                     next: next_idx,
                                     flow: FlowControl::Return(code),
+                                });
+                            }
+                            FlowControl::Break => {
+                                return Ok(BlockResult {
+                                    next: next_idx,
+                                    flow: FlowControl::Break,
+                                });
+                            }
+                            FlowControl::Continue => {
+                                return Ok(BlockResult {
+                                    next: next_idx,
+                                    flow: FlowControl::Continue,
                                 });
                             }
                             FlowControl::None => {}
@@ -3290,13 +3424,29 @@ impl<'a> ScriptContext<'a> {
                                     build_pipeline_stages_from_segments(&after, self.state)?;
                                 stages.append(&mut after_stages);
                                 run_pipeline_stages(stages, self.state)?;
-                            } else if let FlowControl::Return(code) =
-                                execute_inline_block(&body, self.state)?
-                            {
-                                return Ok(BlockResult {
-                                    next: idx + 1,
-                                    flow: FlowControl::Return(code),
-                                });
+                            } else {
+                                match execute_inline_block(&body, self.state)? {
+                                    FlowControl::Return(code) => {
+                                        return Ok(BlockResult {
+                                            next: idx + 1,
+                                            flow: FlowControl::Return(code),
+                                        });
+                                    }
+                                    FlowControl::Break => {
+                                        return Ok(BlockResult {
+                                            next: idx + 1,
+                                            flow: FlowControl::Break,
+                                        });
+                                    }
+                                    FlowControl::Continue => {
+                                        return Ok(BlockResult {
+                                            next: idx + 1,
+                                            flow: FlowControl::Continue,
+                                        });
+                                    }
+                                    FlowControl::None => {}
+                                    FlowControl::Exit => {}
+                                }
                             }
                         }
                         idx += 1;
@@ -3330,6 +3480,18 @@ impl<'a> ScriptContext<'a> {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::Break => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Break,
+                                    });
+                                }
+                                FlowControl::Continue => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Continue,
                                     });
                                 }
                                 FlowControl::None => {}
@@ -3448,6 +3610,193 @@ impl<'a> ScriptContext<'a> {
                 continue;
             }
 
+            if let Some(rest) = trimmed.strip_prefix("while ") {
+                let brace = parse_brace_block(rest);
+                let (condition, brace_block, brace_open, brace_tail) = match brace {
+                    BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
+                    BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
+                    BraceParse::None { head } => (head, None, false, None),
+                };
+                let condition = condition.trim();
+
+                if let Some(block) = brace_block {
+                    if should_execute {
+                        loop {
+                            let run_body = match self
+                                .evaluate_condition(condition)
+                                .map_err(|err| self.format_line_error(&err, idx + 1, &line))?
+                            {
+                                RunResult::Success(success) => success,
+                                RunResult::Exit => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Exit,
+                                    })
+                                }
+                                RunResult::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    })
+                                }
+                                RunResult::Break => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Break,
+                                    })
+                                }
+                                RunResult::Continue => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Continue,
+                                    })
+                                }
+                            };
+                            if !run_body {
+                                break;
+                            }
+                            match execute_inline_block(&block, self.state)? {
+                                FlowControl::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::Break => break,
+                                FlowControl::Continue => continue,
+                                FlowControl::None => {}
+                                FlowControl::Exit => {}
+                            }
+                        }
+                    }
+                    idx += 1;
+                    continue;
+                }
+
+                if brace_open {
+                    let (block_lines, end_idx, tail_line) =
+                        collect_brace_block(&self.lines, idx + 1, brace_tail)?;
+                    if should_execute {
+                        loop {
+                            let run_body = match self
+                                .evaluate_condition(condition)
+                                .map_err(|err| self.format_line_error(&err, idx + 1, &line))?
+                            {
+                                RunResult::Success(success) => success,
+                                RunResult::Exit => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Exit,
+                                    })
+                                }
+                                RunResult::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    })
+                                }
+                                RunResult::Break => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Break,
+                                    })
+                                }
+                                RunResult::Continue => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Continue,
+                                    })
+                                }
+                            };
+                            if !run_body {
+                                break;
+                            }
+                            let mut ctx = ScriptContext {
+                                lines: block_lines.clone(),
+                                state: self.state,
+                            };
+                            match ctx.execute_with_exit()? {
+                                FlowControl::Exit => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
+                                FlowControl::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: end_idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::Break => break,
+                                FlowControl::Continue => continue,
+                                FlowControl::None => {}
+                            }
+                        }
+                    }
+                    if let Some(tail) = tail_line {
+                        return Err(format!(
+                            "unexpected trailing text after while block: {tail}"
+                        ));
+                    }
+                    idx = end_idx + 1;
+                    continue;
+                }
+
+                let while_line_no = idx + 1;
+                idx += 1;
+                let block_start = idx;
+                let block_end = self.find_block_end(block_start, indent_level + 1);
+
+                if should_execute {
+                    loop {
+                        let run_body = match self
+                            .evaluate_condition(condition)
+                            .map_err(|err| self.format_line_error(&err, while_line_no, &line))?
+                        {
+                            RunResult::Success(success) => success,
+                            RunResult::Exit => {
+                                return Ok(BlockResult {
+                                    next: block_end,
+                                    flow: FlowControl::Exit,
+                                })
+                            }
+                            RunResult::Return(code) => {
+                                return Ok(BlockResult {
+                                    next: block_end,
+                                    flow: FlowControl::Return(code),
+                                })
+                            }
+                            RunResult::Break => {
+                                return Ok(BlockResult {
+                                    next: block_end,
+                                    flow: FlowControl::Break,
+                                })
+                            }
+                            RunResult::Continue => {
+                                return Ok(BlockResult {
+                                    next: block_end,
+                                    flow: FlowControl::Continue,
+                                })
+                            }
+                        };
+                        if !run_body {
+                            break;
+                        }
+                        let result = self.execute_block(block_start, indent_level + 1, true)?;
+                        match result.flow {
+                            FlowControl::None => {}
+                            FlowControl::Break => break,
+                            FlowControl::Continue => continue,
+                            _ => return Ok(result),
+                        }
+                    }
+                }
+
+                idx = block_end;
+                continue;
+            }
+
             if let Some(rest) = trimmed.strip_prefix("for ") {
                 let brace = parse_brace_block(rest);
                 let (body, brace_block, brace_open, brace_tail) = match brace {
@@ -3472,13 +3821,17 @@ impl<'a> ScriptContext<'a> {
                     if should_execute {
                         for value in list {
                             self.state.set_var(var_name, value);
-                            if let FlowControl::Return(code) =
-                                execute_inline_block(&block, self.state)?
-                            {
-                                return Ok(BlockResult {
-                                    next: idx + 1,
-                                    flow: FlowControl::Return(code),
-                                });
+                            match execute_inline_block(&block, self.state)? {
+                                FlowControl::Return(code) => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Return(code),
+                                    });
+                                }
+                                FlowControl::Break => break,
+                                FlowControl::Continue => continue,
+                                FlowControl::None => {}
+                                FlowControl::Exit => {}
                             }
                         }
                     }
@@ -3509,6 +3862,8 @@ impl<'a> ScriptContext<'a> {
                                         flow: FlowControl::Return(code),
                                     });
                                 }
+                                FlowControl::Break => break,
+                                FlowControl::Continue => continue,
                                 FlowControl::None => {}
                             }
                         }
@@ -3530,8 +3885,11 @@ impl<'a> ScriptContext<'a> {
                     for value in list {
                         self.state.set_var(var_name, value);
                         let result = self.execute_block(block_start, indent_level + 1, true)?;
-                        if result.flow != FlowControl::None {
-                            return Ok(result);
+                        match result.flow {
+                            FlowControl::None => {}
+                            FlowControl::Break => break,
+                            FlowControl::Continue => continue,
+                            _ => return Ok(result),
                         }
                     }
                 }
@@ -3552,6 +3910,18 @@ impl<'a> ScriptContext<'a> {
                         return Ok(BlockResult {
                             next: idx + 1,
                             flow: FlowControl::Return(code),
+                        });
+                    }
+                    FlowControl::Break => {
+                        return Ok(BlockResult {
+                            next: idx + 1,
+                            flow: FlowControl::Break,
+                        });
+                    }
+                    FlowControl::Continue => {
+                        return Ok(BlockResult {
+                            next: idx + 1,
+                            flow: FlowControl::Continue,
                         });
                     }
                     FlowControl::None => {}
@@ -3677,6 +4047,12 @@ impl<'a> ScriptContext<'a> {
                     RunResult::Return(code) => {
                         return Ok((FlowControl::Return(code), block_start + 1, true));
                     }
+                    RunResult::Break => {
+                        return Ok((FlowControl::Break, block_start + 1, true));
+                    }
+                    RunResult::Continue => {
+                        return Ok((FlowControl::Continue, block_start + 1, true));
+                    }
                 }
             } else {
                 false
@@ -3687,10 +4063,18 @@ impl<'a> ScriptContext<'a> {
 
         if let Some(block) = brace_block {
             if run_child {
-                if let FlowControl::Return(code) =
-                    execute_inline_block(&block, self.state)?
-                {
-                    return Ok((FlowControl::Return(code), block_start + 1, true));
+                match execute_inline_block(&block, self.state)? {
+                    FlowControl::Return(code) => {
+                        return Ok((FlowControl::Return(code), block_start + 1, true));
+                    }
+                    FlowControl::Break => {
+                        return Ok((FlowControl::Break, block_start + 1, true));
+                    }
+                    FlowControl::Continue => {
+                        return Ok((FlowControl::Continue, block_start + 1, true));
+                    }
+                    FlowControl::None => {}
+                    FlowControl::Exit => {}
                 }
                 if let Some(tail) = brace_inline_tail {
                     let (exit, next_idx, _) = self.handle_else_chain_tail(
@@ -3729,6 +4113,10 @@ impl<'a> ScriptContext<'a> {
                     FlowControl::Return(code) => {
                         return Ok((FlowControl::Return(code), end_idx + 1, true))
                     }
+                    FlowControl::Break => return Ok((FlowControl::Break, end_idx + 1, true)),
+                    FlowControl::Continue => {
+                        return Ok((FlowControl::Continue, end_idx + 1, true))
+                    }
                     FlowControl::None => {}
                 }
                 if let Some(tail) = tail_line {
@@ -3762,6 +4150,12 @@ impl<'a> ScriptContext<'a> {
         if let FlowControl::Return(code) = result.flow {
             return Ok((FlowControl::Return(code), result.next, true));
         }
+        if result.flow == FlowControl::Break {
+            return Ok((FlowControl::Break, result.next, true));
+        }
+        if result.flow == FlowControl::Continue {
+            return Ok((FlowControl::Continue, result.next, true));
+        }
         if run_child {
             let (exit, next_idx, _) = self.handle_else_chain(result.next, indent_level, false)?;
             return Ok((exit, next_idx, true));
@@ -3781,6 +4175,8 @@ impl<'a> ScriptContext<'a> {
         match run_expanded_tokens(&expanded, &mut self.state)? {
             FlowControl::Exit => Ok(RunResult::Exit),
             FlowControl::Return(code) => Ok(RunResult::Return(code)),
+            FlowControl::Break => Ok(RunResult::Break),
+            FlowControl::Continue => Ok(RunResult::Continue),
             FlowControl::None => Ok(RunResult::Success(self.state.last_status == 0)),
         }
     }

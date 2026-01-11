@@ -36,8 +36,22 @@ const COLOR_STRING: &str = "\x1b[1;35m";
 const COLOR_KEYWORD: &str = "\x1b[1;31m";
 const COLOR_PROMPT: &str = "\x1b[1;32m";
 const KEYWORDS: &[&str] = &[
-    "alias", "cd", "elif", "else", "eval", "exit", "export", "for", "foreach", "if",
-    "set", "unalias",
+    "alias",
+    "break",
+    "cd",
+    "continue",
+    "each",
+    "elif",
+    "else",
+    "eval",
+    "exit",
+    "export",
+    "for",
+    "foreach",
+    "if",
+    "set",
+    "unalias",
+    "while",
 ];
 
 struct FuzzyCompleter {
@@ -551,8 +565,11 @@ fn builtin_completion_names() -> &'static [&'static str] {
     &[
         "alias",
         "builtin",
+        "break",
         "cd",
+        "continue",
         "def",
+        "each",
         "elif",
         "else",
         "eval",
@@ -567,6 +584,7 @@ fn builtin_completion_names() -> &'static [&'static str] {
         "source",
         "unalias",
         "unset",
+        "while",
     ]
 }
 

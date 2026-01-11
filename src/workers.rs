@@ -51,8 +51,11 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
         trim_trailing_newline(&mut line);
         state.set_var(&opts.var, line);
         if opts.inline {
-            if let FlowControl::Return(_) = execute_inline_block(&block, &mut state)? {
-                return Err("return not allowed in foreach".into());
+            match execute_inline_block(&block, &mut state)? {
+                FlowControl::Return(_) => return Err("return not allowed in foreach".into()),
+                FlowControl::Break => return Err("break not allowed in foreach".into()),
+                FlowControl::Continue => return Err("continue not allowed in foreach".into()),
+                FlowControl::Exit | FlowControl::None => {}
             }
         } else {
             let mut ctx = ScriptContext {
@@ -66,6 +69,12 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
                 }
                 FlowControl::Return(_) => {
                     return Err("return not allowed in foreach".into());
+                }
+                FlowControl::Break => {
+                    return Err("break not allowed in foreach".into());
+                }
+                FlowControl::Continue => {
+                    return Err("continue not allowed in foreach".into());
                 }
                 FlowControl::None => {}
             }
@@ -95,6 +104,8 @@ pub fn run_capture_worker(args: &[String]) -> Result<(), String> {
     match ctx.execute_with_exit()? {
         FlowControl::Exit => return Err("exit not allowed in capture".into()),
         FlowControl::Return(_) => return Err("return not allowed in capture".into()),
+        FlowControl::Break => return Err("break not allowed in capture".into()),
+        FlowControl::Continue => return Err("continue not allowed in capture".into()),
         FlowControl::None => {}
     }
     Ok(())
@@ -128,12 +139,16 @@ pub fn run_block_worker(args: &[String]) -> Result<i32, String> {
         };
         match ctx.execute_with_exit()? {
             FlowControl::Return(_) => Err("return not allowed in inline block".into()),
+            FlowControl::Break => Err("break not allowed in inline block".into()),
+            FlowControl::Continue => Err("continue not allowed in inline block".into()),
             FlowControl::Exit => Ok(state.last_status),
             FlowControl::None => Ok(state.last_status),
         }
     } else {
         match execute_inline_block(&block, &mut state) {
             Ok(FlowControl::Return(_)) => Err("return not allowed in inline block".into()),
+            Ok(FlowControl::Break) => Err("break not allowed in inline block".into()),
+            Ok(FlowControl::Continue) => Err("continue not allowed in inline block".into()),
             Ok(FlowControl::None) => Ok(state.last_status),
             Ok(FlowControl::Exit) => Ok(state.last_status),
             Err(err) => Err(err),
@@ -369,6 +384,8 @@ fn run_function_in_worker(
         FlowControl::Exit => state.last_status,
         FlowControl::Return(code) => code,
         FlowControl::None => state.last_status,
+        FlowControl::Break => return Err("break not allowed in pipeline".into()),
+        FlowControl::Continue => return Err("continue not allowed in pipeline".into()),
     };
 
     debug_log_line_to(

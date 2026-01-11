@@ -1,0 +1,9 @@
+i=0
+while [ $i -lt 5 ]
+	i=[expr $i + 1]
+	if [ $i -eq 2 ]
+		continue
+	if [ $i -eq 4 ]
+		break
+	echo $i
+echo done
