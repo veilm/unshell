@@ -157,12 +157,12 @@ source ./env.ush prod
 ```
 
 ### Control Flow Blocks
-- Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`) followed by either:
+- Blocks are introduced by keywords (`if`, `else`, `elif`, `for`, `foreach`, `while`) followed by either:
   - a newline with indentation **using hard tabs only** (Python-style but without spaces), or
   - a brace-delimited block (inline or multi-line).
 - Authors can mix styles per block, but indentation inside braces is still recommended for clarity.
 - `if`/`elif` conditions accept full command chains, including pipes and `&&`/`||`/`;` logic, and the block runs if the final status is zero.
-- **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach` blocks within scripts, with full command-line evaluation for conditions.
+- **Current implementation:** tab-indented and brace-delimited `if`/`else`/`elif`/`for`/`foreach`/`while` blocks within scripts, with full command-line evaluation for conditions.
 ```bash
 if test -f config.toml
 	echo "config exists"
@@ -208,11 +208,24 @@ printf "%s|" "$*"        # joined into one string
 ### Argument Loops: `for … in`
 - `for name in arglist` iterates over a fully realized list of arguments (typically produced with `...`).
 - Each iteration binds `name` without exporting it.
+- `break` exits the loop and `continue` skips to the next item.
 ```bash
 for server in ...[cat servers.list | quote]
-    ssh $server uptime
+	ssh $server uptime
 ```
 **Current implementation:** tab-indented `for name in ...` blocks inside scripts, reusing the existing tab-indented block execution model.
+
+### Conditional Loops: `while`
+- `while cmd` evaluates `cmd` and repeats the block while the final status is zero.
+- `break` exits the current loop and `continue` skips to the next iteration.
+- Loops run in the parent shell, so mutations persist after the loop completes.
+```bash
+count=0
+while [ $count -lt 3 ]
+    echo $count
+    count=[expr $count + 1]
+```
+**Current implementation:** tab-indented or brace-delimited `while` blocks execute in the parent shell and honor `break`/`continue`.
 
 ### Stream Loops: `foreach`
 - `cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the block for each row.
@@ -259,7 +272,7 @@ for path in ...[cat files.list | quote]
 ```
 
 ### Minimal Built-ins & Aliases
-- The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `unset`, `local`, `return`, `exit`, `builtin`, `eval`, `source`, and the control keywords.
+- The shell ships only what it must: `cd`, `alias`, `unalias`, `set`, `export`, `unset`, `local`, `return`, `exit`, `break`, `continue`, `builtin`, `eval`, `source`, and the control keywords.
 - Everything else is expected to be an external binary or script so users can curate their environment and keep the core auditable.
 ```bash
 alias ll="ls -la"

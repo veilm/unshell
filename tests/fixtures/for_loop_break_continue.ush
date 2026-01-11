@@ -1,0 +1,7 @@
+for item in a b c d
+	if [ $item = b ]
+		continue
+	if [ $item = d ]
+		break
+	echo $item
+echo done
