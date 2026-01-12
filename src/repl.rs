@@ -145,7 +145,10 @@ impl CompletionTrait for FuzzyCompleter {
 }
 
 fn quote_completion(value: &str) -> String {
-    if !value.chars().any(|ch| ch.is_whitespace()) {
+    if !value
+        .chars()
+        .any(|ch| ch.is_whitespace() || ch == '[' || ch == ']')
+    {
         return value.to_string();
     }
     let mut out = String::with_capacity(value.len() + 2);
