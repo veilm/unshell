@@ -1,0 +1,2 @@
+sh tests/fixtures/sigint_probe.sh
+echo after

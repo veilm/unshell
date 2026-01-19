@@ -4,7 +4,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::io::IsTerminal;
 use std::os::unix::io::{AsRawFd, FromRawFd};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
@@ -64,6 +64,7 @@ fn debug_log_source(path: Option<&str>, target: &str) {
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    reset_signal_handlers();
 
     if args.len() > 1 && args[1] == "--foreach-worker" {
         if let Err(err) = run_foreach_worker(&args[2..]) {
@@ -171,6 +172,14 @@ fn main() {
     }
 
     run_repl(&startup);
+}
+
+fn reset_signal_handlers() {
+    unsafe {
+        let _ = libc::signal(libc::SIGINT, libc::SIG_DFL);
+        let _ = libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+        let _ = libc::signal(libc::SIGTSTP, libc::SIG_DFL);
+    }
 }
 
 fn report_exec_error(cmd: &str, err: &io::Error) {
@@ -1564,7 +1573,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
                     .ok_or_else(|| "builtin dispatch failed".to_string())
             });
         }
-        let success = run_pipeline(
+        let result = run_pipeline(
             vec![CommandSpec {
                 args: remaining_args,
                 redirs,
@@ -1572,11 +1581,45 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             }],
             state,
         )?;
-        return Ok(RunResult::Success(success));
+        let stdin_is_terminal = io::stdin().is_terminal();
+        if should_exit_for_signal(
+            state,
+            result.last_signal,
+            state.last_status,
+            stdin_is_terminal,
+        ) {
+            return Ok(RunResult::Exit);
+        }
+        return Ok(RunResult::Success(result.success));
     }
 
     let stages = build_pipeline_stages_from_word_segments(commands, state)?;
-    run_pipeline_stages(stages, state).map(RunResult::Success)
+    let result = run_pipeline_stages(stages, state)?;
+    let stdin_is_terminal = io::stdin().is_terminal();
+    if should_exit_for_signal(
+        state,
+        result.last_signal,
+        state.last_status,
+        stdin_is_terminal,
+    ) {
+        return Ok(RunResult::Exit);
+    }
+    Ok(RunResult::Success(result.success))
+}
+
+fn should_exit_for_signal(
+    state: &ShellState,
+    signal: Option<i32>,
+    last_status: i32,
+    stdin_is_terminal: bool,
+) -> bool {
+    if state.interactive || !stdin_is_terminal {
+        return false;
+    }
+    if matches!(signal, Some(libc::SIGINT | libc::SIGQUIT)) {
+        return true;
+    }
+    last_status == 128 + libc::SIGINT || last_status == 128 + libc::SIGQUIT
 }
 
 fn build_pipeline_stages_from_word_segments(
@@ -2379,13 +2422,19 @@ fn build_pipeline_stages_from_segments(
     Ok(stages)
 }
 
-fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bool, String> {
+struct PipelineResult {
+    success: bool,
+    last_signal: Option<i32>,
+}
+
+fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<PipelineResult, String> {
     let mut children = Vec::new();
     let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
     let mut capture_read: Option<File> = None;
     let mut pipeline_pgrp: Option<libc::pid_t> = None;
     let mut fg_guard: Option<ForegroundGuard> = None;
+    let job_control = io::stdin().is_terminal();
     let log_path = state.options.debug_log_path.clone();
 
     let mut child_count = 0usize;
@@ -2472,7 +2521,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
             }
         }
 
-        configure_process_group(&mut cmd, pipeline_pgrp);
+        configure_process_group(&mut cmd, pipeline_pgrp, job_control);
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
@@ -2489,10 +2538,12 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
 
         if let Some(child) = child {
             let child_pid = child.id() as libc::pid_t;
-            let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
-            let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
-            if fg_guard.is_none() && state.interactive {
-                fg_guard = ForegroundGuard::new(desired_pgrp);
+            if job_control {
+                let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
+                let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
+                if fg_guard.is_none() {
+                    fg_guard = ForegroundGuard::new(desired_pgrp);
+                }
             }
             child_count += 1;
             children.push((cmd_text, child));
@@ -2513,6 +2564,7 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
 
     let mut last_success = true;
     let mut last_status = if child_count == 0 { 127 } else { 0 };
+    let mut last_signal = None;
     for (idx, (name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
@@ -2522,11 +2574,15 @@ fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<bo
         if idx + 1 == commands.len() {
             last_success = status.success();
             last_status = code;
+            last_signal = status.signal();
         }
     }
     state.last_status = last_status;
 
-    Ok(last_success)
+    Ok(PipelineResult {
+        success: last_success,
+        last_signal,
+    })
 }
 
 enum PipelineStage {
@@ -2578,9 +2634,12 @@ fn foreach_stage_from_line(segment_line: &str) -> Result<Option<PipelineStage>, 
 fn run_pipeline_stages(
     stages: Vec<PipelineStage>,
     state: &mut ShellState,
-) -> Result<bool, String> {
+) -> Result<PipelineResult, String> {
     if stages.is_empty() {
-        return Ok(true);
+        return Ok(PipelineResult {
+            success: true,
+            last_signal: None,
+        });
     }
 
     let worker_needed = stages.iter().any(|stage| {
@@ -2607,6 +2666,7 @@ fn run_pipeline_stages(
     let mut capture_read: Option<File> = None;
     let mut pipeline_pgrp: Option<libc::pid_t> = None;
     let mut fg_guard: Option<ForegroundGuard> = None;
+    let job_control = io::stdin().is_terminal();
     let log_path = state.options.debug_log_path.clone();
 
     for (idx, stage) in stages.iter().enumerate() {
@@ -2777,7 +2837,7 @@ fn run_pipeline_stages(
             }
         }
 
-        configure_process_group(&mut cmd, pipeline_pgrp);
+        configure_process_group(&mut cmd, pipeline_pgrp, job_control);
         let child = match cmd.spawn() {
             Ok(child) => Some(child),
             Err(err) => {
@@ -2794,10 +2854,12 @@ fn run_pipeline_stages(
 
         if let Some(child) = child {
             let child_pid = child.id() as libc::pid_t;
-            let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
-            let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
-            if fg_guard.is_none() && state.interactive {
-                fg_guard = ForegroundGuard::new(desired_pgrp);
+            if job_control {
+                let desired_pgrp = *pipeline_pgrp.get_or_insert(child_pid);
+                let _ = unsafe { libc::setpgid(child_pid, desired_pgrp) };
+                if fg_guard.is_none() {
+                    fg_guard = ForegroundGuard::new(desired_pgrp);
+                }
             }
             children.push((name, log_name, child));
         }
@@ -2817,6 +2879,7 @@ fn run_pipeline_stages(
 
     let mut last_success = true;
     let mut last_status = if children.is_empty() { 127 } else { 0 };
+    let mut last_signal = None;
     for (idx, (name, log_name, mut child)) in children.into_iter().enumerate() {
         let status = child
             .wait()
@@ -2828,6 +2891,7 @@ fn run_pipeline_stages(
         if idx + 1 == stages.len() {
             last_success = status.success();
             last_status = exit_status_code(&status);
+            last_signal = status.signal();
         }
     }
 
@@ -2835,7 +2899,10 @@ fn run_pipeline_stages(
     drop(locals_guard);
 
     state.last_status = last_status;
-    Ok(last_success)
+    Ok(PipelineResult {
+        success: last_success,
+        last_signal,
+    })
 }
 
 struct ForegroundGuard {
@@ -2896,11 +2963,15 @@ impl Drop for SignalGuard {
     }
 }
 
-fn configure_process_group(cmd: &mut Command, pgrp: Option<libc::pid_t>) {
+fn configure_process_group(cmd: &mut Command, pgrp: Option<libc::pid_t>, job_control: bool) {
+    if !job_control {
+        return;
+    }
     unsafe {
         cmd.pre_exec(move || {
             let target = pgrp.unwrap_or(0);
             let _ = libc::setpgid(0, target);
+            reset_signal_handlers();
             Ok(())
         });
     }
@@ -3423,7 +3494,18 @@ impl<'a> ScriptContext<'a> {
                                 let mut after_stages =
                                     build_pipeline_stages_from_segments(&after, self.state)?;
                                 stages.append(&mut after_stages);
-                                run_pipeline_stages(stages, self.state)?;
+                                let result = run_pipeline_stages(stages, self.state)?;
+                                if should_exit_for_signal(
+                                    self.state,
+                                    result.last_signal,
+                                    self.state.last_status,
+                                    io::stdin().is_terminal(),
+                                ) {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
                             } else {
                                 match execute_inline_block(&body, self.state)? {
                                     FlowControl::Return(code) => {
@@ -3519,7 +3601,18 @@ impl<'a> ScriptContext<'a> {
                             let mut after_stages =
                                 build_pipeline_stages_from_segments(&after, self.state)?;
                             stages.append(&mut after_stages);
-                            run_pipeline_stages(stages, self.state)?;
+                            let result = run_pipeline_stages(stages, self.state)?;
+                            if should_exit_for_signal(
+                                self.state,
+                                result.last_signal,
+                                self.state.last_status,
+                                io::stdin().is_terminal(),
+                            ) {
+                                return Ok(BlockResult {
+                                    next: end_idx + 1,
+                                    flow: FlowControl::Exit,
+                                });
+                            }
                         }
                     }
                     idx = end_idx + 1;
@@ -3555,7 +3648,18 @@ impl<'a> ScriptContext<'a> {
                         let after_stages =
                             build_pipeline_stages_from_segments(&after, self.state)?;
                         stages.extend(after_stages);
-                        run_pipeline_stages(stages, self.state)?;
+                        let result = run_pipeline_stages(stages, self.state)?;
+                        if should_exit_for_signal(
+                            self.state,
+                            result.last_signal,
+                            self.state.last_status,
+                            io::stdin().is_terminal(),
+                        ) {
+                            return Ok(BlockResult {
+                                next: idx + 1,
+                                flow: FlowControl::Exit,
+                            });
+                        }
                     }
                     idx += 1;
                     continue;
@@ -3579,7 +3683,18 @@ impl<'a> ScriptContext<'a> {
                         let after_stages =
                             build_pipeline_stages_from_segments(&after, self.state)?;
                         stages.extend(after_stages);
-                        run_pipeline_stages(stages, self.state)?;
+                        let result = run_pipeline_stages(stages, self.state)?;
+                        if should_exit_for_signal(
+                            self.state,
+                            result.last_signal,
+                            self.state.last_status,
+                            io::stdin().is_terminal(),
+                        ) {
+                            return Ok(BlockResult {
+                                next: end_idx + 1,
+                                flow: FlowControl::Exit,
+                            });
+                        }
                     }
                     idx = end_idx + 1;
                     continue;
@@ -3603,7 +3718,18 @@ impl<'a> ScriptContext<'a> {
                         block: block_lines.join("\n"),
                         inline: false,
                     });
-                    run_pipeline_stages(stages, self.state)?;
+                    let result = run_pipeline_stages(stages, self.state)?;
+                    if should_exit_for_signal(
+                        self.state,
+                        result.last_signal,
+                        self.state.last_status,
+                        io::stdin().is_terminal(),
+                    ) {
+                        return Ok(BlockResult {
+                            next: block_end,
+                            flow: FlowControl::Exit,
+                        });
+                    }
                 }
 
                 idx = block_end;
@@ -4239,5 +4365,27 @@ fn capture_output_enabled(state: &ShellState) -> bool {
 }
 
 fn exit_status_code(status: &ExitStatus) -> i32 {
-    status.code().unwrap_or(1)
+    status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sigint_exit_only_when_tty() {
+        let mut state = ShellState::new();
+        state.interactive = false;
+        assert!(
+            should_exit_for_signal(&state, None, 128 + libc::SIGINT, true),
+            "should exit on SIGINT status when stdin is a tty"
+        );
+        assert!(
+            !should_exit_for_signal(&state, None, 128 + libc::SIGINT, false),
+            "should not exit when stdin is not a tty"
+        );
+    }
 }
