@@ -12,7 +12,10 @@
 - `;` sequences commands unconditionally; `&&`/`||` short-circuit on success/failure.
 - No special syntax beyond `cmd arg | next_cmd`, `;`, `&&`, and `||`; parentheses handle precedence without default subshell semantics.
 - Pipeline segments may be functions or brace blocks (inline or multi-line); these run in a subprocess and do not mutate parent shell state.
-- Interactive shells run external pipelines in their own process group and temporarily hand off the controlling terminal when the shell owns the foreground.
+- When stdin is a terminal, external pipelines run in their own process group and the shell temporarily hands off the controlling terminal while the pipeline runs.
+- When stdin is not a terminal, external commands stay in the same process group.
+- In non-interactive shells with a terminal on stdin, a foreground command that ends with `SIGINT` or `SIGQUIT` stops the script and sets `$?` to `128+signal`.
+- Child processes reset `SIGINT`, `SIGQUIT`, and `SIGTSTP` handlers to defaults so interrupts reach external commands even if the shell uses custom handlers.
 - Non-zero exit codes only update `$?` and do not emit warnings by default.
 - Short-circuit operators (`&&`/`||`) only evaluate the executed branch; expansions and captures in skipped branches are not evaluated.
 - Missing commands in a pipeline report an error but do not abort the rest of the pipeline.

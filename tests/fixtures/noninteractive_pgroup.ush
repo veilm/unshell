@@ -1,0 +1,1 @@
+sh -c 'pgid_self=$(ps -o pgid= -p $$ | tr -d " "); pgid_parent=$(ps -o pgid= -p $PPID | tr -d " "); if [ "$pgid_self" = "$pgid_parent" ]; then echo same; else echo diff; fi'

@@ -73,3 +73,33 @@ fn read_optional(path: &Path) -> String {
         Err(_) => String::new(),
     }
 }
+
+#[test]
+fn sigint_resets_when_parent_ignores() {
+    let script = Path::new("tests/fixtures/sigint_reset.ush");
+    let stdout = read_optional(&script.with_extension("stdout"));
+    let stderr = read_optional(&script.with_extension("stderr"));
+    let command = format!(
+        "trap '' INT; exec {} --norc {}",
+        env!("CARGO_BIN_EXE_ush"),
+        script.display()
+    );
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .output()
+        .expect("failed to run ush with ignored SIGINT");
+
+    let actual_stdout = String::from_utf8(output.stdout).expect("stdout not UTF-8");
+    let actual_stderr = String::from_utf8(output.stderr).expect("stderr not UTF-8");
+
+    assert_eq!(
+        actual_stdout, stdout,
+        "stdout mismatch for sigint_reset fixture"
+    );
+    assert_eq!(
+        actual_stderr, stderr,
+        "stderr mismatch for sigint_reset fixture"
+    );
+}
