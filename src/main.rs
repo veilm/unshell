@@ -1422,6 +1422,19 @@ fn is_quoted_token(token: &str) -> bool {
         || (token.starts_with('"') && token.ends_with('"') && token.len() >= 2)
 }
 
+fn command_alias_index(tokens: &[String]) -> Option<usize> {
+    for (idx, token) in tokens.iter().enumerate() {
+        if is_quoted_token(token) {
+            return Some(idx);
+        }
+        if parse_assignment(token).is_some() {
+            continue;
+        }
+        return Some(idx);
+    }
+    None
+}
+
 fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, String> {
     if tokens.is_empty() {
         return Ok(tokens);
@@ -1434,6 +1447,7 @@ fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, S
     loop {
         let mut changed = false;
         let mut next = Vec::new();
+        let command_idx = command_alias_index(&current);
 
         for (idx, token) in current.iter().enumerate() {
             if is_quoted_token(token) {
@@ -1441,7 +1455,7 @@ fn apply_alias(tokens: Vec<String>, state: &ShellState) -> Result<Vec<String>, S
                 continue;
             }
 
-            if idx == 0 {
+            if Some(idx) == command_idx {
                 if let Some(alias) = state.aliases.get(token) {
                     debug_log_alias(log_path.as_deref(), token, &alias.value, false);
                     let alias_tokens = parse_args(&alias.value)?;

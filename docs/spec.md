@@ -304,7 +304,7 @@ builtin cd /tmp  # -> "alias /tmp" (global alias rewrites the token)
 
 ### Alias Semantics
 - Aliases are parsed like normal commands: argument parsing and expansions happen before the builtin receives values.
-- Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first token of a command or pipeline segment.
+- Global aliases (`alias -g`) can match any unquoted token, while normal aliases only match the first non-assignment token of a command or pipeline segment.
 ```bash
 alias greet "echo $name"
 alias -g today "[date +%F]"
@@ -316,6 +316,7 @@ echo today # expands to: echo [date +%F]
   - Alias definitions run through the same expansion rules as other commands; single quotes keep `$var` literal, double quotes expand.
   - Alias expansion repeats while `aliases.recursive` is true.
   - Quoted tokens never trigger global alias replacement.
+  - Leading `name=value` assignments are ignored when deciding which token is eligible for normal alias expansion.
   - Alias expansion happens before control keywords are parsed.
   - `alias NAME` with no value prints the current alias (or errors if it does not exist).
 
