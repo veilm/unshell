@@ -32,7 +32,7 @@ use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, r
 #[cfg(feature = "repl")]
 use crate::workers::trim_trailing_newline;
 #[cfg(not(feature = "repl"))]
-use crate::term::cursor_column;
+use crate::term::print_prompt_spacer;
 
 pub(crate) const DEFAULT_PROMPT: &str = "unshell> ";
 const FUNCTION_MAX_DEPTH: usize = 64;
@@ -334,33 +334,17 @@ fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
 }
 
 #[cfg(not(feature = "repl"))]
-fn print_incomplete_marker(stdout: &mut io::Stdout) -> io::Result<()> {
-    stdout.write_all(b"\x1b[7m$\x1b[0m\n")?;
-    stdout.flush()
-}
-
-#[cfg(not(feature = "repl"))]
 fn maybe_print_incomplete_marker(
     stdout: &mut io::Stdout,
     state: &mut ShellState,
 ) {
     if state.needs_cursor_check {
-        if let Some(column) = cursor_column() {
-            if column != 1 {
-                let _ = print_incomplete_marker(stdout);
-            }
-        }
+        let _ = print_prompt_spacer(stdout);
         state.needs_cursor_check = false;
         return;
     }
-    if let Some(column) = cursor_column() {
-        if column != 1 {
-            let _ = print_incomplete_marker(stdout);
-        }
-        return;
-    }
     if !state.last_output_newline {
-        let _ = print_incomplete_marker(stdout);
+        let _ = print_prompt_spacer(stdout);
         state.last_output_newline = true;
     }
 }

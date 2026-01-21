@@ -71,3 +71,60 @@ fn parse_cursor_response(bytes: &[u8]) -> Option<u16> {
     let col = parts.next()?;
     col.parse::<u16>().ok()
 }
+
+#[cfg(unix)]
+fn terminal_columns() -> Option<u16> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    unsafe {
+        let mut winsize: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut winsize) != 0 {
+            return None;
+        }
+        if winsize.ws_col == 0 {
+            return None;
+        }
+        Some(winsize.ws_col)
+    }
+}
+
+#[cfg(not(unix))]
+fn terminal_columns() -> Option<u16> {
+    None
+}
+
+fn prompt_spacer_bytes(columns: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"\x1b[7m$\x1b[0m");
+    let pad = columns.saturating_sub(1) as usize;
+    if pad > 0 {
+        out.extend(std::iter::repeat(b' ').take(pad));
+    }
+    out.extend_from_slice(b"\r\x1b[J");
+    out
+}
+
+pub fn print_prompt_spacer(stdout: &mut dyn Write) -> io::Result<bool> {
+    let columns = match terminal_columns() {
+        Some(columns) => columns,
+        None => return Ok(false),
+    };
+    let bytes = prompt_spacer_bytes(columns);
+    stdout.write_all(&bytes)?;
+    stdout.flush()?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_spacer_bytes;
+
+    #[test]
+    fn prompt_spacer_has_marker_and_clear() {
+        let bytes = prompt_spacer_bytes(4);
+        assert!(bytes.starts_with(b"\x1b[7m$\x1b[0m"));
+        assert!(bytes.ends_with(b"\r\x1b[J"));
+        assert!(bytes.contains(&b' '));
+    }
+}

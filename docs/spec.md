@@ -339,6 +339,7 @@ set debug.log /tmp/ush-debug.log
 ### REPL (Optional)
 - The interactive prompt is provided by Rustyline when built with the default `repl` feature.
 - Vi mode is the default editing mode.
+- When running interactively, the shell prints a prompt spacer marker (inverse `$`) to keep prompts aligned even if the previous command did not end with a newline.
 - History is persisted based on `USH_HISTFILE`/`HISTFILE`/`XDG_DATA_HOME`/`$HOME` (see `docs/repl.md`).
 - Completion uses `fzf` when available with a list-completion fallback.
 - Basic highlighting colors strings and built-ins/control keywords.
