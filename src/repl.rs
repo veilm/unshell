@@ -24,7 +24,7 @@ use rustyline::{
 
 use crate::parser::parse_args;
 use crate::state::{ReplBinding, ReplCompletionMode, ShellState};
-use crate::term::cursor_column;
+use crate::term::{cursor_column, print_prompt_spacer};
 use crate::{
     build_prompt, maybe_auto_refresh_repl, process_line, run_named_function, RunResult,
     DEFAULT_PROMPT,
@@ -1396,18 +1396,10 @@ pub fn run_repl(state: &mut ShellState) {
             helper.update_completion_snapshot(collect_completion_snapshot(state));
         }
         if state.needs_cursor_check {
-            if let Some(column) = cursor_column() {
-                if column != 1 {
-                    let _ = print_incomplete_marker();
-                }
-            }
+            let _ = print_prompt_spacer(&mut std::io::stdout());
             state.needs_cursor_check = false;
-        } else if let Some(column) = cursor_column() {
-            if column != 1 {
-                let _ = print_incomplete_marker();
-            }
         } else if !state.last_output_newline {
-            let _ = print_incomplete_marker();
+            let _ = print_prompt_spacer(&mut std::io::stdout());
             state.last_output_newline = true;
         }
 
@@ -1483,10 +1475,4 @@ fn run_after_command_hook(line: &str, state: &mut ShellState) -> bool {
         Some(RunResult::Exit) => false,
         Some(_) | None => true,
     }
-}
-
-fn print_incomplete_marker() -> std::io::Result<()> {
-    let mut stdout = std::io::stdout();
-    stdout.write_all(b"\x1b[7m$\x1b[0m\n")?;
-    stdout.flush()
 }
