@@ -1,0 +1,4 @@
+set expansions.characters "{" on
+set expansions.handler python3 util/expansion_handler.py
+def hi { echo $* }
+hi "foo {bar}" baz
