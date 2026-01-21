@@ -138,22 +138,11 @@ fn expand_tokens_with_meta_inner(
                 continue;
             }
             for value in state.positional.iter() {
-                if should_expand_with_handler(value, state) {
-                    let replacements = run_expansion_handler(value, state)?;
-                    for replacement in replacements {
-                        expanded.push(ExpandedToken {
-                            value: replacement,
-                            protected: !from_spread,
-                            allow_split: false,
-                        });
-                    }
-                } else {
-                    expanded.push(ExpandedToken {
-                        value: value.clone(),
-                        protected: !from_spread,
-                        allow_split: false,
-                    });
-                }
+                expanded.push(ExpandedToken {
+                    value: value.clone(),
+                    protected: !from_spread,
+                    allow_split: false,
+                });
             }
             continue;
         }
