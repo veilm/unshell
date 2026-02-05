@@ -39,7 +39,12 @@ Resolution order:
 - prompt command: `set repl.prompt.command 'echo "unshell> "'` (runs once per line)
 
 - The REPL passes file, command, or variable candidates to `fzf` on stdin.
-- It expects the same output shape as `fzf --print-query` (query line + selected line).
+- It expects the same output shape as `fzf --print-query --expect=...` (key line, query line, then selected lines).
+- fzf runs with multi-select enabled; toggle selections with `ctrl-m` / `alt-m`.
+- `tab` / `btab` move the cursor down/up without toggling selection.
+- `ctrl-y` / `alt-y` select all current matches and accept.
+- `ctrl-a` / `alt-a` accept selections and insert a `PREFIX*` wildcard when multiple entries share a prefix.
+- `ctrl-s` / `alt-s` accept selections and insert a `*SUFFIX` wildcard when multiple entries share a suffix.
 - List mode uses prefix matching and auto-completes when there is a single candidate.
 - If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
 - Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.

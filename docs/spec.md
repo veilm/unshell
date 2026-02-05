@@ -365,6 +365,8 @@ set repl.bind btab complete
   - `repl.completion.mode` accepts `fzf`, `list`, or `off`.
   - `repl.bind` maps keys to a small set of editing actions (move, kill-line, accept-line, history search, complete, insert text, comment-accept).
   - `btab` completion starts fzf on the last match.
+  - fzf completion runs with multi-select; `ctrl-m` / `alt-m` toggle selection, `tab` / `btab` move, `ctrl-y` / `alt-y` select-all+accept.
+  - `ctrl-a` / `alt-a` accept selections and insert a `PREFIX*` wildcard when multiple entries share a prefix; `ctrl-s` / `alt-s` do the same for suffixes (`*SUFFIX`).
   - Completion covers files/directories, `$VAR` names, and command names (builtins, functions, aliases, `$PATH` entries).
   - `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.
 

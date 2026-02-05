@@ -310,13 +310,49 @@ fn complete_candidates(
     let choices: Vec<String> = candidates.iter().map(fzf_display_for_candidate).collect();
     let start_last = start_last.swap(false, Ordering::SeqCst);
     match run_fuzzy(&choices, query, start_last) {
-        FuzzyOutcome::Selected(sel) => {
-            let selected = candidates.iter().find(|c| c.display == sel).cloned();
-            if let Some(mut choice) = selected {
+        FuzzyOutcome::Selected(selection) => {
+            let selected = selections_to_pairs(&candidates, &selection.selections);
+            if selected.is_empty() {
+                return Ok((start, candidates));
+            }
+            let key = selection.key.as_deref();
+            if matches!(key, Some("ctrl-a") | Some("alt-a")) && selected.len() >= 2 {
+                let prefix = common_prefix(&selected);
+                let mut replacement = quote_completion(&format!("{prefix}*"));
+                replacement.push(' ');
+                return Ok((
+                    start,
+                    vec![Pair {
+                        display: replacement.clone(),
+                        replacement,
+                    }],
+                ));
+            }
+            if matches!(key, Some("ctrl-s") | Some("alt-s")) && selected.len() >= 2 {
+                let suffix = common_suffix(&selected);
+                let mut replacement = quote_completion(&format!("*{suffix}"));
+                replacement.push(' ');
+                return Ok((
+                    start,
+                    vec![Pair {
+                        display: replacement.clone(),
+                        replacement,
+                    }],
+                ));
+            }
+            if selected.len() == 1 {
+                let mut choice = selected[0].clone();
                 finalize_completion_with_context(&mut choice, quote_ctx);
                 Ok((start, vec![choice]))
             } else {
-                Ok((start, candidates))
+                let replacement = build_multi_replacement(&selected, quote_ctx);
+                Ok((
+                    start,
+                    vec![Pair {
+                        display: replacement.clone(),
+                        replacement,
+                    }],
+                ))
             }
         }
         FuzzyOutcome::Cancelled => Ok((
@@ -328,6 +364,120 @@ fn complete_candidates(
         )),
         FuzzyOutcome::Unavailable => Ok((start, candidates)),
     }
+}
+
+fn selections_to_pairs(candidates: &[Pair], selections: &[String]) -> Vec<Pair> {
+    let mut out = Vec::with_capacity(selections.len());
+    for selection in selections {
+        if let Some(choice) = candidates.iter().find(|c| c.display == *selection) {
+            out.push(choice.clone());
+        } else {
+            out.push(Pair {
+                display: selection.clone(),
+                replacement: selection.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn build_multi_replacement(selections: &[Pair], quote_ctx: Option<&QuoteContext>) -> String {
+    if selections.is_empty() {
+        return String::new();
+    }
+    let last_is_dir = selections
+        .last()
+        .map(|item| item.replacement.ends_with('/'))
+        .unwrap_or(false);
+
+    if let Some(ctx) = quote_ctx {
+        if !ctx.has_closing {
+            if selections.len() == 1 {
+                let mut out = selections[0].replacement.clone();
+                if !last_is_dir {
+                    out.push(ctx.quote);
+                    out.push(' ');
+                }
+                return out;
+            }
+            let mut out = selections[0].replacement.clone();
+            out.push(ctx.quote);
+            out.push(' ');
+            let mut first = true;
+            for item in &selections[1..] {
+                if !first {
+                    out.push(' ');
+                }
+                out.push_str(&quote_completion(&item.replacement));
+                first = false;
+            }
+            if !last_is_dir {
+                out.push(' ');
+            }
+            return out;
+        }
+    }
+
+    let mut out = String::new();
+    for (idx, item) in selections.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push_str(&quote_completion(&item.replacement));
+    }
+    if !last_is_dir {
+        out.push(' ');
+    }
+    out
+}
+
+fn common_prefix(selections: &[Pair]) -> String {
+    let mut iter = selections.iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    let mut prefix = first.replacement.clone();
+    for item in iter {
+        let next = item.replacement.as_str();
+        let mut matched = 0usize;
+        for (a, b) in prefix.chars().zip(next.chars()) {
+            if a == b {
+                matched += a.len_utf8();
+            } else {
+                break;
+            }
+        }
+        prefix.truncate(matched);
+        if prefix.is_empty() {
+            break;
+        }
+    }
+    prefix
+}
+
+fn common_suffix(selections: &[Pair]) -> String {
+    let mut iter = selections.iter();
+    let Some(first) = iter.next() else {
+        return String::new();
+    };
+    let mut suffix = first.replacement.clone();
+    for item in iter {
+        let next = item.replacement.as_str();
+        let mut matched = 0usize;
+        for (a, b) in suffix.chars().rev().zip(next.chars().rev()) {
+            if a == b {
+                matched += a.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let keep = suffix.len().saturating_sub(matched);
+        suffix.replace_range(..keep, "");
+        if suffix.is_empty() {
+            break;
+        }
+    }
+    suffix
 }
 
 fn fzf_display_for_candidate(candidate: &Pair) -> String {
@@ -806,8 +956,13 @@ fn resolve_dir(dir_prefix: &str) -> std::path::PathBuf {
     std::path::Path::new(path).to_path_buf()
 }
 
+struct FuzzySelection {
+    key: Option<String>,
+    selections: Vec<String>,
+}
+
 enum FuzzyOutcome {
-    Selected(String),
+    Selected(FuzzySelection),
     Cancelled,
     Unavailable,
 }
@@ -853,15 +1008,11 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
         }
 
         let output_text = String::from_utf8_lossy(&output.stdout);
-        let mut lines = output_text.lines();
-        let _query_line = lines.next();
-        let selected = lines.next().unwrap_or("").trim();
-        let selected = strip_ansi_codes(selected);
-
-        if selected.is_empty() {
+        let (key, selections) = parse_fzf_output(&output_text);
+        if selections.is_empty() {
             return FuzzyOutcome::Cancelled;
         }
-        return FuzzyOutcome::Selected(selected);
+        return FuzzyOutcome::Selected(FuzzySelection { key, selections });
     }
 }
 
@@ -883,6 +1034,46 @@ fn strip_ansi_codes(input: &str) -> String {
         out.push(ch);
     }
     out
+}
+
+fn parse_fzf_output(output: &str) -> (Option<String>, Vec<String>) {
+    let expect_enabled = !fzf_option_disabled("--expect");
+    let print_query_enabled = !fzf_option_disabled("--print-query");
+    let mut lines = output.lines();
+    let mut key = None;
+    if print_query_enabled && expect_enabled {
+        let _ = lines.next();
+        if let Some(line) = lines.next() {
+            let line = line.trim();
+            if !line.is_empty() {
+                key = Some(line.to_string());
+            }
+        }
+    } else {
+        if expect_enabled {
+            if let Some(line) = lines.next() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    key = Some(line.to_string());
+                }
+            }
+        }
+        if print_query_enabled {
+            let _ = lines.next();
+        }
+    }
+    let mut selections = Vec::new();
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let cleaned = strip_ansi_codes(trimmed);
+        if !cleaned.is_empty() {
+            selections.push(cleaned);
+        }
+    }
+    (key, selections)
 }
 
 fn run_fzf_once(
@@ -971,12 +1162,15 @@ fn fzf_args() -> Vec<&'static str> {
         "--no-separator",
         "--reverse",
         "-1",
+        "--multi",
         "--prompt",
         "> ",
         "--exit-0",
+        "--expect",
+        "enter,ctrl-a,alt-a,ctrl-s,alt-s",
         "--print-query",
         "--bind",
-        "tab:down,btab:up,alt-k:up,alt-j:down,alt-o:toggle-sort,ctrl-o:toggle-sort,ctrl-j:down,ctrl-k:up",
+        "tab:down,btab:up,ctrl-m:toggle,alt-m:toggle,ctrl-y:select-all+accept,alt-y:select-all+accept,alt-k:up,alt-j:down,alt-o:toggle-sort,ctrl-o:toggle-sort,ctrl-j:down,ctrl-k:up",
     ];
     let mut i = 0;
     while i < opts.len() {
