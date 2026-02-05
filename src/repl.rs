@@ -35,6 +35,7 @@ const COLOR_COMMENT: &str = "\x1b[0;90m";
 const COLOR_STRING: &str = "\x1b[1;35m";
 const COLOR_KEYWORD: &str = "\x1b[1;31m";
 const COLOR_PROMPT: &str = "\x1b[1;32m";
+const COLOR_DIR: &str = "\x1b[32m";
 const KEYWORDS: &[&str] = &[
     "alias",
     "break",
@@ -306,7 +307,7 @@ fn complete_candidates(
         return Ok((start, candidates));
     }
 
-    let choices: Vec<String> = candidates.iter().map(|c| c.display.clone()).collect();
+    let choices: Vec<String> = candidates.iter().map(fzf_display_for_candidate).collect();
     let start_last = start_last.swap(false, Ordering::SeqCst);
     match run_fuzzy(&choices, query, start_last) {
         FuzzyOutcome::Selected(sel) => {
@@ -326,6 +327,14 @@ fn complete_candidates(
             }],
         )),
         FuzzyOutcome::Unavailable => Ok((start, candidates)),
+    }
+}
+
+fn fzf_display_for_candidate(candidate: &Pair) -> String {
+    if candidate.replacement.ends_with('/') {
+        format!("{COLOR_DIR}{}{COLOR_RESET}", candidate.display)
+    } else {
+        candidate.display.clone()
     }
 }
 
@@ -846,13 +855,34 @@ fn run_fuzzy(choices: &[String], query: &str, start_last: bool) -> FuzzyOutcome 
         let output_text = String::from_utf8_lossy(&output.stdout);
         let mut lines = output_text.lines();
         let _query_line = lines.next();
-        let selected = lines.next().unwrap_or("").trim().to_string();
+        let selected = lines.next().unwrap_or("").trim();
+        let selected = strip_ansi_codes(selected);
 
         if selected.is_empty() {
             return FuzzyOutcome::Cancelled;
         }
         return FuzzyOutcome::Selected(selected);
     }
+}
+
+fn strip_ansi_codes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                while let Some(code) = chars.next() {
+                    if code.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn run_fzf_once(
@@ -932,6 +962,7 @@ fn fzf_args() -> Vec<&'static str> {
         " ",
         "--color",
         "16",
+        "--ansi",
         "--cycle",
         "--no-scrollbar",
         "--color",
