@@ -854,6 +854,10 @@ impl<'b> InputState<'b> {
                 self.input_mode = InputMode::Insert; // TODO Validate
                 Cmd::ReverseSearchHistory
             }
+            E(K::Char('R' | 'r'), M::ALT) => {
+                self.input_mode = InputMode::Insert; // TODO Validate
+                Cmd::ReverseSearchHistory
+            }
             E(K::Char('S'), M::CTRL) => {
                 self.input_mode = InputMode::Insert; // TODO Validate
                 Cmd::ForwardSearchHistory
@@ -1064,6 +1068,7 @@ impl<'b> InputState<'b> {
             E(K::Down, M::NONE) => Cmd::LineDownOrNextHistory(1),
             E(K::Up, M::NONE) => Cmd::LineUpOrPreviousHistory(1),
             E(K::Char('R'), M::CTRL) => Cmd::ReverseSearchHistory,
+            E(K::Char('R' | 'r'), M::ALT) => Cmd::ReverseSearchHistory,
             // most terminals override Ctrl+S to suspend execution
             E(K::Char('S'), M::CTRL) => Cmd::ForwardSearchHistory,
             E(K::Char('T'), M::CTRL) => Cmd::TransposeChars,
