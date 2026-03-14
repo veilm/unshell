@@ -44,6 +44,13 @@ if [ $USH_MODE = repl ]
 	alias ls "env ls -G --color=auto"
 	alias ll "ls -lh"
 	alias la "ls -A"
+	alias cp "env cp -i"
+	alias mv "env mv -i"
+	
+	if [ $EDITOR ]
+		alias e $EDITOR	
+	elif which kak o+e>n
+		alias e kak
 
 	function g
 		cd $1
