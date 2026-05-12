@@ -311,7 +311,7 @@ fn list_custom_completion_candidates(
         return None;
     };
 
-    match run_completion_helper(rule, line, pos, fragment, tokens_before.len()) {
+    match run_completion_handler(rule, line, pos, fragment, tokens_before.len()) {
         Ok(items) => Some(
             items.into_iter()
                 .filter(|item| fragment.is_empty() || item.starts_with(fragment))
@@ -483,7 +483,7 @@ fn unescape_double_quoted_completion_token(token: &str) -> String {
     out
 }
 
-fn run_completion_helper(
+fn run_completion_handler(
     rule: &CompletionRule,
     line: &str,
     pos: usize,
@@ -498,7 +498,7 @@ fn run_completion_helper(
     cmd.env("USH_COMP_CWORD", cword.to_string());
     let output = cmd.output().map_err(|err| {
         format!(
-            "failed to execute completion helper '{}': {err}",
+            "failed to execute completion handler '{}': {err}",
             rule.program
         )
     })?;
@@ -508,18 +508,18 @@ fn run_completion_helper(
     if !output.status.success() {
         if let Some(code) = output.status.code() {
             return Err(format!(
-                "completion helper '{}' failed with status {code}",
+                "completion handler '{}' failed with status {code}",
                 rule.program
             ));
         }
-        return Err(format!("completion helper '{}' failed", rule.program));
+        return Err(format!("completion handler '{}' failed", rule.program));
     }
     let text = String::from_utf8(output.stdout)
-        .map_err(|_| format!("completion helper '{}' output not utf-8", rule.program))?;
+        .map_err(|_| format!("completion handler '{}' output not utf-8", rule.program))?;
     parse_json_string_array(&text).map_err(|err| {
         let trimmed = text.trim_end_matches(&['\n', '\r'][..]);
         format!(
-            "completion helper '{}' output invalid JSON: {err}: {trimmed}",
+            "completion handler '{}' output invalid JSON: {err}: {trimmed}",
             rule.program
         )
     })
@@ -973,7 +973,7 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::{
         completion_prefix_tokens, list_custom_completion_candidates, list_dir_candidates,
-        run_completion_helper, unquote_completion_token, QuoteContext,
+        run_completion_handler, unquote_completion_token, QuoteContext,
     };
     use crate::state::CompletionRule;
     use std::fs;
@@ -1145,24 +1145,24 @@ mod tests {
     }
 
     #[test]
-    fn completion_helper_receives_match_args_and_env() {
+    fn completion_handler_receives_match_args_and_env() {
         let dir = temp_dir();
         fs::create_dir_all(&dir).unwrap();
-        let helper = dir.join("complete-helper.sh");
+        let handler = dir.join("complete-handler.sh");
         fs::write(
-            &helper,
+            &handler,
             "#!/bin/sh\nprintf '[\"%s|%s|%s|%s|%s\"]' \"$1\" \"$2\" \"$USH_COMP_WORD\" \"$USH_COMP_POINT\" \"$USH_COMP_CWORD\"\n",
         )
         .unwrap();
-        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        let mut perms = fs::metadata(&handler).unwrap().permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&helper, perms).unwrap();
+        fs::set_permissions(&handler, perms).unwrap();
 
         let rule = CompletionRule {
-            program: helper.display().to_string(),
+            program: handler.display().to_string(),
             match_args: vec!["git".to_string(), "diff".to_string()],
         };
-        let items = run_completion_helper(&rule, "git diff fo", 11, "fo", 2).unwrap();
+        let items = run_completion_handler(&rule, "git diff fo", 11, "fo", 2).unwrap();
         assert_eq!(items, vec!["git|diff|fo|11|2".to_string()]);
 
         let _ = fs::remove_dir_all(&dir);

@@ -1,0 +1,6 @@
+root=/tmp/ush-completion-handler
+rm -rf $root
+mkdir -p $root/alpha $root/alpine $root/beta
+touch $root/also-file
+USH_COMP_WORD="$root/al" python3 util/completion_handler.py rmdir
+rm -rf $root

@@ -56,7 +56,7 @@ Resolution order:
 - Exact custom completion rules can be registered with `complete add --exec PROGRAM MATCH...`.
 - A custom rule applies only when the words before the current fragment exactly match `MATCH...`.
 - When a custom rule matches, unshell runs `PROGRAM MATCH...`, expects a JSON array of strings on stdout, prefix-filters those results against the current fragment, and sends the remaining candidates through the normal list/fzf flow.
-- The default installed init registers `/usr/local/bin/ush-completion-helper` for `rmdir`, so when that helper is installed, `rmdir <tab>` offers only directories.
+- The default installed init registers `/usr/local/bin/ush-completion-handler` for `rmdir`, so when that handler is installed, `rmdir <tab>` offers only directories.
 
 Example:
 
@@ -85,7 +85,7 @@ USH_COMP_WORD=sr
 USH_COMP_CWORD=2
 ```
 
-If the helper prints:
+If the handler prints:
 
 ```json
 ["src/main.rs", "src/repl.rs", "tests/integration.rs"]
