@@ -427,6 +427,7 @@ The shell sources the first existing init file from this list:
 4. `$HOME/.unshell/init`
 
 `./install.sh` will install `util/unshell_init` into `/etc/unshell/init` if it does not already exist.
+The default init registers `/usr/local/bin/ush-completion-helper` for `rmdir` when the helper exists, so `rmdir` completion lists directories rather than regular files.
 
 Flags:
 ```bash

@@ -37,6 +37,10 @@ if [ -f $handler ]
 	set expansions.characters "*" on
 	set expansions.handler $handler
 
+completion_helper=/usr/local/bin/ush-completion-helper
+if [ -f $completion_helper ]
+	complete add --exec $completion_helper rmdir
+
 if [ $USH_MODE = repl ]
 	echo "[unshell] You're using the default /etc/unshell/init!"
 	echo "[unshell] To change startup behaviour, edit this file or see docs/repl.md."
