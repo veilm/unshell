@@ -412,6 +412,7 @@ USH_COMP_CWORD=2
   - fzf completion runs with multi-select; `ctrl-m` / `alt-m` toggle selection, `tab` / `btab` move, `ctrl-y` / `alt-y` select-all+accept.
   - `ctrl-a` / `alt-a` accept selections and insert a `PREFIX*` wildcard when multiple entries share a prefix; `ctrl-s` / `alt-s` do the same for suffixes (`*SUFFIX`).
   - Completion covers files/directories, `$VAR` names, and command names (builtins, functions, aliases, `$PATH` entries).
+  - Filesystem completion pre-expands the current unquoted fragment with the configured expansion handler when it contains an enabled expansion character and the handler returns exactly one string; this lets `~/<tab>` complete as the expanded home path without hardcoding `~` in the REPL.
   - `complete add --exec PROGRAM MATCH...`, `complete list`, and `complete remove MATCH...` manage exact-match custom completion rules.
   - Custom rules run external handlers with `USH_COMP_LINE`, `USH_COMP_POINT`, `USH_COMP_WORD`, and `USH_COMP_CWORD`, then feed the handler's JSON string array through the normal completion UI.
   - `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.

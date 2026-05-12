@@ -49,6 +49,7 @@ Resolution order:
 - If `fzf` exits with status 1 (no matches with `--exit-0`), completion is treated as cancelled and does not fall back to list mode.
 - Shift-Tab (`btab`) triggers completion with the fzf cursor starting on the last match.
 - Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
+- Before filesystem completion lists entries, it may pass the current unquoted fragment through the configured expansion handler. If the handler returns exactly one string, completion uses that string as the filesystem base. For example, with the default `~` expansion enabled, `~/<tab>` completes inside the expanded home directory and inserts expanded paths.
 - When completing inside quotes, the quoted fragment is used as the completion input.
 - If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
 - Variable completion triggers when the fragment starts with `$`, using the current shell/environment variable names.

@@ -140,8 +140,18 @@ impl CompletionTrait for FuzzyCompleter {
             );
         }
 
-        let (dir_prefix, query) = split_dir_query(fragment);
-        let include_hidden = fragment.starts_with('.') || fragment.contains("/.");
+        let (expansion_chars, expansion_handler) = {
+            let guard = self.snapshot.lock().unwrap();
+            (guard.expansion_chars.clone(), guard.expansion_handler.clone())
+        };
+        let file_fragment = filesystem_completion_fragment(
+            fragment,
+            quote_ctx.as_ref(),
+            &expansion_chars,
+            &expansion_handler,
+        );
+        let (dir_prefix, query) = split_dir_query(&file_fragment);
+        let include_hidden = file_fragment.starts_with('.') || file_fragment.contains("/.");
         let candidates = list_dir_candidates(&dir_prefix, include_hidden);
         complete_candidates(
             candidates,
@@ -286,6 +296,59 @@ fn split_dir_query(fragment: &str) -> (String, &str) {
         }
         None => (String::new(), fragment),
     }
+}
+
+fn filesystem_completion_fragment(
+    fragment: &str,
+    quote_ctx: Option<&QuoteContext>,
+    expansion_chars: &HashSet<char>,
+    expansion_handler: &[String],
+) -> String {
+    if quote_ctx.is_some()
+        || expansion_chars.is_empty()
+        || expansion_handler.is_empty()
+        || !fragment.chars().any(|ch| expansion_chars.contains(&ch))
+    {
+        return fragment.to_string();
+    }
+
+    match run_completion_expansion_handler(fragment, expansion_handler) {
+        Ok(items) if items.len() == 1 => items[0].clone(),
+        Ok(_) => fragment.to_string(),
+        Err(err) => {
+            eprintln!("unshell: completion expansion failed: {err}");
+            fragment.to_string()
+        }
+    }
+}
+
+fn run_completion_expansion_handler(
+    fragment: &str,
+    expansion_handler: &[String],
+) -> std::result::Result<Vec<String>, String> {
+    let mut cmd = Command::new(&expansion_handler[0]);
+    if expansion_handler.len() > 1 {
+        cmd.args(&expansion_handler[1..]);
+    }
+    let output = cmd
+        .arg(fragment)
+        .output()
+        .map_err(|err| format!("failed to execute expansion handler: {err}"))?;
+    if !output.stderr.is_empty() {
+        let _ = std::io::stderr().write_all(&output.stderr);
+    }
+    if !output.status.success() {
+        if let Some(code) = output.status.code() {
+            return Err(format!("expansion handler failed with status {code}"));
+        }
+        return Err("expansion handler failed".into());
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| "expansion handler output not utf-8".to_string())?;
+    parse_json_string_array(&text).map_err(|err| {
+        let trimmed = text.trim_end_matches(&['\n', '\r'][..]);
+        format!("expansion handler output invalid JSON: {err}: {trimmed}")
+    })
 }
 
 fn list_custom_completion_candidates(
@@ -532,6 +595,8 @@ struct CompletionSnapshot {
     commands: Vec<String>,
     commands_ready: bool,
     rules: Vec<CompletionRule>,
+    expansion_chars: HashSet<char>,
+    expansion_handler: Vec<String>,
     path: String,
 }
 
@@ -878,6 +943,8 @@ fn collect_completion_snapshot(state: &ShellState) -> CompletionSnapshot {
         commands: Vec::new(),
         commands_ready: false,
         rules: state.repl.completion_rules.clone(),
+        expansion_chars: state.options.expansions_chars.clone(),
+        expansion_handler: state.options.expansions_handler.clone(),
         path,
     }
 }
@@ -972,10 +1039,13 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        completion_prefix_tokens, list_custom_completion_candidates, list_dir_candidates,
-        run_completion_handler, unquote_completion_token, QuoteContext,
+        build_multi_replacement, completion_prefix_tokens, filesystem_completion_fragment,
+        list_custom_completion_candidates, list_dir_candidates, run_completion_handler,
+        unquote_completion_token, QuoteContext,
     };
     use crate::state::CompletionRule;
+    use rustyline::completion::Pair;
+    use std::collections::HashSet;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -1040,6 +1110,59 @@ mod tests {
     }
 
     #[test]
+    fn filesystem_completion_fragment_uses_single_handler_result() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let handler = dir.join("expand.sh");
+        fs::write(&handler, "#!/bin/sh\nprintf '[\"/expanded/home/\"]'\n").unwrap();
+        let mut perms = fs::metadata(&handler).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&handler, perms).unwrap();
+
+        let mut chars = HashSet::new();
+        chars.insert('~');
+        let fragment = filesystem_completion_fragment(
+            "~/",
+            None,
+            &chars,
+            &["sh".to_string(), handler.display().to_string()],
+        );
+
+        assert_eq!(fragment, "/expanded/home/");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn filesystem_completion_fragment_does_not_expand_inside_quotes() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let handler = dir.join("expand.sh");
+        fs::write(&handler, "#!/bin/sh\nprintf '[\"/expanded/home/\"]'\n").unwrap();
+        let mut perms = fs::metadata(&handler).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&handler, perms).unwrap();
+
+        let mut chars = HashSet::new();
+        chars.insert('~');
+        let quote_ctx = QuoteContext {
+            start: 0,
+            quote: '"',
+            has_closing: false,
+        };
+        let fragment = filesystem_completion_fragment(
+            "~/",
+            Some(&quote_ctx),
+            &chars,
+            &["sh".to_string(), handler.display().to_string()],
+        );
+
+        assert_eq!(fragment, "~/");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn quote_context_reports_open_double_quote() {
         let line = "echo \"docs";
         let pos = line.len();
@@ -1070,6 +1193,25 @@ mod tests {
         assert_eq!(ctx.quote, '\'');
         assert_eq!(ctx.start, 5);
         assert!(ctx.has_closing);
+    }
+
+    #[test]
+    fn multi_replacement_quotes_absolute_paths_with_spaces() {
+        let selections = vec![
+            Pair {
+                display: "one".to_string(),
+                replacement: "/home/light/example file one.mp4".to_string(),
+            },
+            Pair {
+                display: "two".to_string(),
+                replacement: "/home/light/example, file two.mp4".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            build_multi_replacement(&selections, None),
+            "\"/home/light/example file one.mp4\" \"/home/light/example, file two.mp4\" "
+        );
     }
 
     #[test]
@@ -1170,12 +1312,6 @@ mod tests {
 }
 
 fn resolve_dir(dir_prefix: &str) -> std::path::PathBuf {
-    if dir_prefix.starts_with("~/") {
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(dir_prefix.trim_start_matches("~/"));
-        }
-    }
-
     let path = if dir_prefix.is_empty() { "." } else { dir_prefix };
     std::path::Path::new(path).to_path_buf()
 }
