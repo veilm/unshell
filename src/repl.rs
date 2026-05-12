@@ -1859,6 +1859,9 @@ pub fn run_repl(state: &mut ShellState) {
                     if let Some(path) = next_history_path.as_ref() {
                         let _ = next.load_history(path);
                     }
+                    if let Some(helper) = next.helper_mut() {
+                        helper.update_completion_snapshot(collect_completion_snapshot(state));
+                    }
                     rl = next;
                     history_path = next_history_path;
                 }
