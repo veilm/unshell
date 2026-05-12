@@ -25,8 +25,8 @@ use crate::parser::{
 };
 use crate::state::{
     debug_log_line_to, format_command, format_function_body, lookup_var, read_locals_file,
-    read_shell_state_file, write_locals_file, write_shell_state_file, FunctionBody, FunctionDef,
-    ShellState,
+    read_shell_state_file, write_locals_file, write_shell_state_file, CompletionRule,
+    FunctionBody, FunctionDef, ShellState,
 };
 use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
 #[cfg(feature = "repl")]
@@ -1835,6 +1835,7 @@ fn is_builtin(name: &str) -> bool {
         name,
         "cd"
             | "alias"
+            | "complete"
             | "unalias"
             | "set"
             | "export"
@@ -1984,6 +1985,7 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
             Ok(Some(RunResult::Success(true)))
         }
         "alias" => run_alias_builtin_expanded(args, state),
+        "complete" => run_complete_builtin_expanded(args, state),
         "unalias" => {
             if args.len() != 2 {
                 return Err("unalias: expected exactly one name".into());
@@ -2317,6 +2319,82 @@ fn run_alias_builtin_expanded(
     state.set_alias(alias_name, value, global);
     state.last_status = 0;
     Ok(Some(RunResult::Success(true)))
+}
+
+fn run_complete_builtin_expanded(
+    args: &[String],
+    state: &mut ShellState,
+) -> Result<Option<RunResult>, String> {
+    if args.len() < 2 {
+        return Err("complete: expected add|list|remove".into());
+    }
+
+    match args[1].as_str() {
+        "add" => {
+            if args.len() < 5 {
+                return Err("complete add: expected --exec PROGRAM MATCH...".into());
+            }
+            if args[2] != "--exec" {
+                return Err("complete add: expected --exec PROGRAM MATCH...".into());
+            }
+            let program = args[3].clone();
+            let match_args = args[4..].to_vec();
+            if match_args.is_empty() {
+                return Err("complete add: expected at least one MATCH argument".into());
+            }
+
+            let rule = CompletionRule { program, match_args };
+            if let Some(existing) = state
+                .repl
+                .completion_rules
+                .iter_mut()
+                .find(|existing| existing.match_args == rule.match_args)
+            {
+                *existing = rule;
+            } else {
+                state.repl.completion_rules.push(rule);
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Success(true)))
+        }
+        "list" => {
+            if args.len() != 2 {
+                return Err("complete list: too many arguments".into());
+            }
+            for rule in state.repl.completion_rules.iter() {
+                let mut command = vec![
+                    "complete".to_string(),
+                    "add".to_string(),
+                    "--exec".to_string(),
+                    rule.program.clone(),
+                ];
+                command.extend(rule.match_args.iter().cloned());
+                println!("{}", format_command(&command));
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Success(true)))
+        }
+        "remove" => {
+            if args.len() < 3 {
+                return Err("complete remove: expected MATCH...".into());
+            }
+            let match_args = &args[2..];
+            let len_before = state.repl.completion_rules.len();
+            state
+                .repl
+                .completion_rules
+                .retain(|rule| rule.match_args != match_args);
+            if state.repl.completion_rules.len() == len_before {
+                return Err(format!(
+                    "complete remove: no completion rule for {}",
+                    format_command(match_args)
+                ));
+            }
+            state.last_status = 0;
+            Ok(Some(RunResult::Success(true)))
+        }
+        other => Err(format!("complete: unknown subcommand '{other}'")),
+    }
 }
 
 fn build_pipeline_stages_from_segments(

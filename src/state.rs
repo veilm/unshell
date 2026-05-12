@@ -37,6 +37,12 @@ pub struct ReplBinding {
     pub action: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionRule {
+    pub program: String,
+    pub match_args: Vec<String>,
+}
+
 #[derive(Clone, Copy)]
 pub enum ReplCompletionMode {
     Fzf,
@@ -48,6 +54,7 @@ pub enum ReplCompletionMode {
 pub struct ReplOptions {
     pub vi_mode: bool,
     pub completion_mode: ReplCompletionMode,
+    pub completion_rules: Vec<CompletionRule>,
     pub prompt_command: Option<String>,
     pub bindings: Vec<ReplBinding>,
     pub bracketed_paste: bool,
@@ -87,6 +94,7 @@ impl ShellState {
             repl: ReplOptions {
                 vi_mode: true,
                 completion_mode: ReplCompletionMode::Fzf,
+                completion_rules: Vec::new(),
                 prompt_command: None,
                 bindings: Vec::new(),
                 bracketed_paste: false,
@@ -286,7 +294,7 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
 }
 
 const STATE_MAGIC: &[u8] = b"USHSTATE";
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 
 pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
     let (path, mut file) = create_temp_file("state")?;
@@ -356,6 +364,14 @@ pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFi
         },
     )?;
     write_bool(&mut file, state.repl.bracketed_paste)?;
+    write_u32(&mut file, state.repl.completion_rules.len() as u32)?;
+    for rule in state.repl.completion_rules.iter() {
+        write_string(&mut file, &rule.program)?;
+        write_u32(&mut file, rule.match_args.len() as u32)?;
+        for value in rule.match_args.iter() {
+            write_string(&mut file, value)?;
+        }
+    }
     write_u32(&mut file, state.repl.bindings.len() as u32)?;
     for binding in state.repl.bindings.iter() {
         write_string(&mut file, &binding.key)?;
@@ -404,7 +420,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         ));
     }
     let version = read_u32(&mut file)?;
-    if version != 1 && version != STATE_VERSION {
+    if version != 1 && version != 2 && version != STATE_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "state file version mismatch",
@@ -488,6 +504,22 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         }
     };
     state.repl.bracketed_paste = read_bool(&mut file)?;
+    if version >= 3 {
+        let rule_len = read_u32(&mut file)? as usize;
+        state.repl.completion_rules = Vec::with_capacity(rule_len);
+        for _ in 0..rule_len {
+            let program = read_string(&mut file, "repl completion program")?;
+            let match_len = read_u32(&mut file)? as usize;
+            let mut match_args = Vec::with_capacity(match_len);
+            for _ in 0..match_len {
+                match_args.push(read_string(&mut file, "repl completion match arg")?);
+            }
+            state
+                .repl
+                .completion_rules
+                .push(CompletionRule { program, match_args });
+        }
+    }
     let binding_len = read_u32(&mut file)? as usize;
     state.repl.bindings = Vec::with_capacity(binding_len);
     for _ in 0..binding_len {

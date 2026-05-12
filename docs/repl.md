@@ -53,6 +53,44 @@ Resolution order:
 - If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
 - Variable completion triggers when the fragment starts with `$`, using the current shell/environment variable names.
 - Command completion triggers in command position (first word of a pipeline segment) and looks at builtins, functions, aliases, and `$PATH`.
+- Exact custom completion rules can be registered with `complete add --exec PROGRAM MATCH...`.
+- A custom rule applies only when the words before the current fragment exactly match `MATCH...`.
+- When a custom rule matches, unshell runs `PROGRAM MATCH...`, expects a JSON array of strings on stdout, prefix-filters those results against the current fragment, and sends the remaining candidates through the normal list/fzf flow.
+
+Example:
+
+```bash
+complete add --exec my-unshell-complete git diff
+```
+
+If the REPL line is:
+
+```bash
+git diff sr
+```
+
+and the cursor is at the end when `tab` is pressed, unshell runs:
+
+```bash
+my-unshell-complete git diff
+```
+
+with:
+
+```text
+USH_COMP_LINE=git diff sr
+USH_COMP_POINT=11
+USH_COMP_WORD=sr
+USH_COMP_CWORD=2
+```
+
+If the helper prints:
+
+```json
+["src/main.rs", "src/repl.rs", "tests/integration.rs"]
+```
+
+then the REPL offers the `src/...` matches for selection.
 
 ## Highlighting
 
@@ -89,6 +127,10 @@ set repl.bind ctrl-k kill-line
 set repl.bind ctrl-a beginning-of-line
 set repl.bind ctrl-e end-of-line
 set repl.bind esc accept-line
+
+complete add --exec my-unshell-complete git diff
+complete list
+complete remove git diff
 ```
 
 - In vi mode, `#` defaults to `comment-accept` unless overridden by a custom binding.

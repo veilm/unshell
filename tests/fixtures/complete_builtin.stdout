@@ -1,0 +1,3 @@
+complete add --exec my-unshell-complete git diff
+complete add --exec helper cargo test
+complete add --exec helper cargo test

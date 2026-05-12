@@ -638,7 +638,7 @@ fn run_expansion_handler(token: &str, state: &ShellState) -> Result<Vec<String>,
     })
 }
 
-fn parse_json_string_array(input: &str) -> Result<Vec<String>, String> {
+pub(crate) fn parse_json_string_array(input: &str) -> Result<Vec<String>, String> {
     let mut chars = input.chars().peekable();
     skip_json_ws(&mut chars);
     if chars.next() != Some('[') {

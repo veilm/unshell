@@ -98,10 +98,10 @@ add-highlighter shared/unshell/code/assignment regex ((?<![-:])\b\w+)= 1:variabl
 add-highlighter shared/unshell/code/operators regex %{(&&|\|\||\||;)} 0:operator
 
 try %{
-    declare-option str-list unshell_static_words if else elif for foreach each while in def function fn alias unalias cd set export local return exit builtin eval break continue
+    declare-option str-list unshell_static_words if else elif for foreach each while in def function fn alias unalias cd complete set export local return exit builtin eval break continue
 }
 
 # add-highlighter shared/unshell/code/keyword regex \b(if|else|elif|for|foreach|in|def|function|fn)\b 0:keyword
-add-highlighter shared/unshell/code/builtin regex %{\b(alias|unalias|cd|set|export|local|return|exit|builtin|eval|break|continue)\b} 0:builtin
+add-highlighter shared/unshell/code/builtin regex %{\b(alias|unalias|cd|complete|set|export|local|return|exit|builtin|eval|break|continue)\b} 0:builtin
 
 @

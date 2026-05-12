@@ -22,8 +22,9 @@ use rustyline::{
     Movement, RepeatCount, Result, Validator, Word,
 };
 
+use crate::expand::parse_json_string_array;
 use crate::parser::parse_args;
-use crate::state::{ReplBinding, ReplCompletionMode, ShellState};
+use crate::state::{CompletionRule, ReplBinding, ReplCompletionMode, ShellState};
 use crate::term::{cursor_column, print_prompt_spacer};
 use crate::{
     build_prompt, maybe_auto_refresh_repl, process_line, run_named_function, RunResult,
@@ -40,6 +41,7 @@ const KEYWORDS: &[&str] = &[
     "alias",
     "break",
     "cd",
+    "complete",
     "continue",
     "each",
     "elif",
@@ -109,6 +111,24 @@ impl CompletionTrait for FuzzyCompleter {
                 guard.commands.clone()
             };
             let candidates = list_command_candidates(&commands, fragment);
+            return complete_candidates(
+                candidates,
+                fragment,
+                start,
+                fragment,
+                quote_ctx.as_ref(),
+                self.mode,
+                &self.start_last,
+            );
+        }
+
+        let rules = {
+            let guard = self.snapshot.lock().unwrap();
+            guard.rules.clone()
+        };
+        if let Some(candidates) =
+            list_custom_completion_candidates(&rules, line, pos, start, fragment, quote_ctx.as_ref())
+        {
             return complete_candidates(
                 candidates,
                 fragment,
@@ -268,12 +288,250 @@ fn split_dir_query(fragment: &str) -> (String, &str) {
     }
 }
 
+fn list_custom_completion_candidates(
+    rules: &[CompletionRule],
+    line: &str,
+    pos: usize,
+    start: usize,
+    fragment: &str,
+    quote_ctx: Option<&QuoteContext>,
+) -> Option<Vec<Pair>> {
+    if is_command_position(line, start) {
+        return None;
+    }
+
+    let tokens_before = match completion_prefix_tokens(line, start, quote_ctx) {
+        Ok(tokens) => tokens,
+        Err(err) => {
+            eprintln!("unshell: completion parse failed: {err}");
+            return Some(Vec::new());
+        }
+    };
+    let Some(rule) = rules.iter().find(|rule| rule.match_args == tokens_before) else {
+        return None;
+    };
+
+    match run_completion_helper(rule, line, pos, fragment, tokens_before.len()) {
+        Ok(items) => Some(
+            items.into_iter()
+                .filter(|item| fragment.is_empty() || item.starts_with(fragment))
+                .map(|item| Pair {
+                    display: item.clone(),
+                    replacement: item,
+                })
+                .collect(),
+        ),
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            Some(Vec::new())
+        }
+    }
+}
+
+fn completion_prefix_tokens(
+    line: &str,
+    start: usize,
+    quote_ctx: Option<&QuoteContext>,
+) -> std::result::Result<Vec<String>, String> {
+    let segment_start = current_segment_start(line, start);
+    let prefix_end = quote_ctx.map(|ctx| ctx.start).unwrap_or(start);
+    let prefix = line[segment_start.min(prefix_end)..prefix_end].trim();
+    if prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tokens = parse_args(prefix)?;
+    Ok(tokens
+        .into_iter()
+        .map(|token| unquote_completion_token(&token))
+        .collect())
+}
+
+fn current_segment_start(line: &str, end: usize) -> usize {
+    let bytes = line.as_bytes();
+    let mut idx = 0usize;
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut bracket_depth = 0;
+    let mut paren_depth = 0;
+    let mut brace_depth = 0;
+    let mut last_op_end = 0usize;
+
+    while idx < end && idx < bytes.len() {
+        let ch = bytes[idx];
+        if in_double && ch == b'\\' && idx + 1 < end {
+            idx += 2;
+            continue;
+        }
+
+        match ch {
+            b'\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
+                in_single = !in_single;
+                idx += 1;
+                continue;
+            }
+            b'"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                in_double = !in_double;
+                idx += 1;
+                continue;
+            }
+            b'$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                if idx + 1 < end && bytes[idx + 1] == b'(' {
+                    paren_depth = 1;
+                    idx += 2;
+                    continue;
+                }
+            }
+            b'[' if !in_double && !in_single && paren_depth == 0 => {
+                if idx + 1 < end && bytes[idx + 1].is_ascii_whitespace() {
+                    // literal [
+                } else {
+                    bracket_depth += 1;
+                }
+                idx += 1;
+                continue;
+            }
+            b'[' if bracket_depth > 0 => {
+                bracket_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            b'(' if paren_depth > 0 => {
+                paren_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b')' if paren_depth > 0 => {
+                paren_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            b'{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
+                brace_depth += 1;
+                idx += 1;
+                continue;
+            }
+            b'}' if brace_depth > 0 => {
+                brace_depth -= 1;
+                idx += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 {
+            if ch == b'|' {
+                if idx + 1 < end && bytes[idx + 1] == b'|' {
+                    idx += 2;
+                } else {
+                    idx += 1;
+                }
+                last_op_end = idx;
+                continue;
+            }
+            if ch == b'&' && idx + 1 < end && bytes[idx + 1] == b'&' {
+                idx += 2;
+                last_op_end = idx;
+                continue;
+            }
+            if ch == b';' {
+                idx += 1;
+                last_op_end = idx;
+                continue;
+            }
+        }
+
+        idx += 1;
+    }
+
+    last_op_end
+}
+
+fn unquote_completion_token(token: &str) -> String {
+    if token.len() >= 2 && token.starts_with('\'') && token.ends_with('\'') {
+        return token[1..token.len() - 1].to_string();
+    }
+    if token.len() >= 2 && token.starts_with('"') && token.ends_with('"') {
+        return unescape_double_quoted_completion_token(&token[1..token.len() - 1]);
+    }
+    token.to_string()
+}
+
+fn unescape_double_quoted_completion_token(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut chars = token.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if let Some(next) = chars.next() {
+                if next == '"' {
+                    out.push('"');
+                } else {
+                    out.push('\\');
+                    out.push(next);
+                }
+            } else {
+                out.push('\\');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn run_completion_helper(
+    rule: &CompletionRule,
+    line: &str,
+    pos: usize,
+    fragment: &str,
+    cword: usize,
+) -> std::result::Result<Vec<String>, String> {
+    let mut cmd = Command::new(&rule.program);
+    cmd.args(&rule.match_args);
+    cmd.env("USH_COMP_LINE", line);
+    cmd.env("USH_COMP_POINT", pos.to_string());
+    cmd.env("USH_COMP_WORD", fragment);
+    cmd.env("USH_COMP_CWORD", cword.to_string());
+    let output = cmd.output().map_err(|err| {
+        format!(
+            "failed to execute completion helper '{}': {err}",
+            rule.program
+        )
+    })?;
+    if !output.stderr.is_empty() {
+        let _ = std::io::stderr().write_all(&output.stderr);
+    }
+    if !output.status.success() {
+        if let Some(code) = output.status.code() {
+            return Err(format!(
+                "completion helper '{}' failed with status {code}",
+                rule.program
+            ));
+        }
+        return Err(format!("completion helper '{}' failed", rule.program));
+    }
+    let text = String::from_utf8(output.stdout)
+        .map_err(|_| format!("completion helper '{}' output not utf-8", rule.program))?;
+    parse_json_string_array(&text).map_err(|err| {
+        let trimmed = text.trim_end_matches(&['\n', '\r'][..]);
+        format!(
+            "completion helper '{}' output invalid JSON: {err}: {trimmed}",
+            rule.program
+        )
+    })
+}
+
 #[derive(Default)]
 struct CompletionSnapshot {
     vars: Vec<String>,
     base_commands: Vec<String>,
     commands: Vec<String>,
     commands_ready: bool,
+    rules: Vec<CompletionRule>,
     path: String,
 }
 
@@ -516,108 +774,8 @@ fn list_command_candidates(commands: &[String], fragment: &str) -> Vec<Pair> {
 }
 
 fn is_command_position(line: &str, start: usize) -> bool {
-    let bytes = line.as_bytes();
-    let mut idx = 0usize;
-    let mut in_double = false;
-    let mut in_single = false;
-    let mut bracket_depth = 0;
-    let mut paren_depth = 0;
-    let mut brace_depth = 0;
-    let mut last_op_end = 0usize;
-
-    while idx < start && idx < bytes.len() {
-        let ch = bytes[idx];
-        if in_double && ch == b'\\' && idx + 1 < start {
-            idx += 2;
-            continue;
-        }
-
-        match ch {
-            b'\'' if !in_double && bracket_depth == 0 && paren_depth == 0 => {
-                in_single = !in_single;
-                idx += 1;
-                continue;
-            }
-            b'"' if !in_single && bracket_depth == 0 && paren_depth == 0 => {
-                in_double = !in_double;
-                idx += 1;
-                continue;
-            }
-            b'$' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
-                if idx + 1 < start && bytes[idx + 1] == b'(' {
-                    paren_depth = 1;
-                    idx += 2;
-                    continue;
-                }
-            }
-            b'[' if !in_double && !in_single && paren_depth == 0 => {
-                if idx + 1 < start && bytes[idx + 1].is_ascii_whitespace() {
-                    // literal [
-                } else {
-                    bracket_depth += 1;
-                }
-                idx += 1;
-                continue;
-            }
-            b'[' if bracket_depth > 0 => {
-                bracket_depth += 1;
-                idx += 1;
-                continue;
-            }
-            b']' if bracket_depth > 0 => {
-                bracket_depth -= 1;
-                idx += 1;
-                continue;
-            }
-            b'(' if paren_depth > 0 => {
-                paren_depth += 1;
-                idx += 1;
-                continue;
-            }
-            b')' if paren_depth > 0 => {
-                paren_depth -= 1;
-                idx += 1;
-                continue;
-            }
-            b'{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
-                brace_depth += 1;
-                idx += 1;
-                continue;
-            }
-            b'}' if brace_depth > 0 => {
-                brace_depth -= 1;
-                idx += 1;
-                continue;
-            }
-            _ => {}
-        }
-
-        if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 {
-            if ch == b'|' {
-                if idx + 1 < start && bytes[idx + 1] == b'|' {
-                    idx += 2;
-                } else {
-                    idx += 1;
-                }
-                last_op_end = idx;
-                continue;
-            }
-            if ch == b'&' && idx + 1 < start && bytes[idx + 1] == b'&' {
-                idx += 2;
-                last_op_end = idx;
-                continue;
-            }
-            if ch == b';' {
-                idx += 1;
-                last_op_end = idx;
-                continue;
-            }
-        }
-
-        idx += 1;
-    }
-
-    let segment = line[last_op_end.min(start)..start].trim();
+    let segment_start = current_segment_start(line, start);
+    let segment = line[segment_start.min(start)..start].trim();
     let Ok(tokens) = parse_args(segment) else {
         return segment.is_empty();
     };
@@ -719,6 +877,7 @@ fn collect_completion_snapshot(state: &ShellState) -> CompletionSnapshot {
         base_commands: commands,
         commands: Vec::new(),
         commands_ready: false,
+        rules: state.repl.completion_rules.clone(),
         path,
     }
 }
@@ -729,6 +888,7 @@ fn builtin_completion_names() -> &'static [&'static str] {
         "builtin",
         "break",
         "cd",
+        "complete",
         "continue",
         "def",
         "each",
@@ -811,8 +971,13 @@ fn is_executable(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::list_dir_candidates;
+    use super::{
+        completion_prefix_tokens, list_custom_completion_candidates, list_dir_candidates,
+        run_completion_helper, unquote_completion_token, QuoteContext,
+    };
+    use crate::state::CompletionRule;
     use std::fs;
+    use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -942,6 +1107,65 @@ mod tests {
         let line = "VAR=1 cmd";
         let start = line.find("cmd").unwrap();
         assert!(super::is_command_position(line, start));
+    }
+
+    #[test]
+    fn completion_prefix_tokens_handle_quoted_previous_args() {
+        let line = r#"git "show diff" "fi"#;
+        let quote_ctx = QuoteContext {
+            start: line.rfind('"').unwrap(),
+            quote: '"',
+            has_closing: false,
+        };
+        let tokens = completion_prefix_tokens(line, quote_ctx.start + 1, Some(&quote_ctx)).unwrap();
+        assert_eq!(tokens, vec!["git".to_string(), "show diff".to_string()]);
+    }
+
+    #[test]
+    fn unquote_completion_token_handles_double_quotes() {
+        assert_eq!(
+            unquote_completion_token(r#""show \"diff\"""#),
+            "show \"diff\"".to_string()
+        );
+    }
+
+    #[test]
+    fn custom_completion_rules_match_exact_prefix_only() {
+        let rules = vec![CompletionRule {
+            program: "ignored".to_string(),
+            match_args: vec!["git".to_string(), "diff".to_string()],
+        }];
+
+        assert!(list_custom_completion_candidates(&rules, "git diff fo", 11, 9, "fo", None)
+            .is_some());
+        assert!(
+            list_custom_completion_candidates(&rules, "git diff --cached fo", 20, 18, "fo", None)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn completion_helper_receives_match_args_and_env() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("complete-helper.sh");
+        fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '[\"%s|%s|%s|%s|%s\"]' \"$1\" \"$2\" \"$USH_COMP_WORD\" \"$USH_COMP_POINT\" \"$USH_COMP_CWORD\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&helper).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&helper, perms).unwrap();
+
+        let rule = CompletionRule {
+            program: helper.display().to_string(),
+            match_args: vec!["git".to_string(), "diff".to_string()],
+        };
+        let items = run_completion_helper(&rule, "git diff fo", 11, "fo", 2).unwrap();
+        assert_eq!(items, vec!["git|diff|fo|11|2".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

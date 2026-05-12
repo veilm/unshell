@@ -342,6 +342,7 @@ set debug.log /tmp/ush-debug.log
 - When running interactively, the shell prints a prompt spacer marker (inverse `$`) to keep prompts aligned even if the previous command did not end with a newline.
 - History is persisted based on `USH_HISTFILE`/`HISTFILE`/`XDG_DATA_HOME`/`$HOME` (see `docs/repl.md`).
 - Completion uses `fzf` when available with a list-completion fallback.
+- REPL completion rules can be extended with external helpers for exact argument contexts.
 - Basic highlighting colors strings and built-ins/control keywords.
 - REPL-only settings are configured via `set`:
 ```bash
@@ -355,7 +356,50 @@ set repl.history.file /tmp/ush-history
 set repl.bind ctrl-e end-of-line
 set repl.bind alt-f forward-word
 set repl.bind btab complete
+
+complete add --exec my-unshell-complete git diff
+complete add --exec my-unshell-complete cargo test
+complete add --exec my-unshell-complete npm run
+complete list
+complete remove git diff
 ```
+- `complete add --exec PROGRAM MATCH...` registers a custom REPL completion rule.
+- `PROGRAM` is a single executable path/name in v1; helper arguments are not configured separately.
+- `MATCH...` is the exact argv prefix before the word being completed, using normal shell quoting rules.
+- `complete remove MATCH...` removes the rule for that exact match.
+- `complete list` prints registered rules in a reusable shell form.
+- Custom completion rules are REPL-only state and persist across `refresh-repl` the same way other REPL settings do.
+- A matched custom rule replaces default file/directory completion for that context in v1.
+- Variable completion (`$NAME`) and command-name completion in command position still use the built-in logic; custom rules apply to argument contexts.
+- Matching is exact in v1: a rule for `git diff` applies to `git diff <cursor>` but not `git diff --cached <cursor>` or `git diff HEAD <cursor>`.
+- When a rule matches, the shell executes `PROGRAM MATCH...` and expects a JSON array of UTF-8 strings on stdout.
+- The helper also receives context in env:
+  - `USH_COMP_LINE`: the full current input line as typed in the REPL.
+  - `USH_COMP_POINT`: the cursor position as a byte offset into `USH_COMP_LINE`.
+  - `USH_COMP_WORD`: the current word fragment being completed, without surrounding quote delimiters.
+  - `USH_COMP_CWORD`: the zero-based word index within the current pipeline segment.
+- The shell prefix-filters helper results against `USH_COMP_WORD`, then feeds the remaining candidates through the existing list/fzf UI, quoting, and multi-select behavior.
+- If the helper exits non-zero or emits invalid JSON, completion fails for that keypress and the shell reports the error instead of silently falling back to file completion.
+- The shell parses the current pipeline segment with normal shell tokenization when deciding whether a rule matches, so quoted arguments are matched as single argv elements when needed.
+- Rule matching ignores aliases in v1; it uses the literal argv typed for the current pipeline segment after normal tokenization.
+- Concrete example:
+```bash
+complete add --exec my-unshell-complete git diff
+
+# REPL input before pressing Tab
+git diff sr
+
+# helper invocation
+my-unshell-complete git diff
+
+# helper env
+USH_COMP_LINE=git diff sr
+USH_COMP_POINT=11
+USH_COMP_WORD=sr
+USH_COMP_CWORD=2
+```
+- If that helper prints `["src/main.rs","src/repl.rs","tests/integration.rs"]`, unshell filters by the `sr` fragment and shows the remaining matches in the usual completion UI.
+- **V1 exclusions:** helper-specific fixed args, shell-function completers, static in-config candidate lists, fallback/merge modes with file completion, alias-aware matching, and prefix/longest-prefix rule resolution.
 - If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
 - `refresh-repl` re-execs into a new `ush` binary, preserving shell state (vars, aliases, functions, repl settings) without re-sourcing startup files.
 - If the running executable has been replaced/removed (e.g., after `install.sh`), the REPL auto-refreshes before rendering the next prompt and prints a one-line notice.
@@ -368,6 +412,8 @@ set repl.bind btab complete
   - fzf completion runs with multi-select; `ctrl-m` / `alt-m` toggle selection, `tab` / `btab` move, `ctrl-y` / `alt-y` select-all+accept.
   - `ctrl-a` / `alt-a` accept selections and insert a `PREFIX*` wildcard when multiple entries share a prefix; `ctrl-s` / `alt-s` do the same for suffixes (`*SUFFIX`).
   - Completion covers files/directories, `$VAR` names, and command names (builtins, functions, aliases, `$PATH` entries).
+  - `complete add --exec PROGRAM MATCH...`, `complete list`, and `complete remove MATCH...` manage exact-match custom completion rules.
+  - Custom rules run external helpers with `USH_COMP_LINE`, `USH_COMP_POINT`, `USH_COMP_WORD`, and `USH_COMP_CWORD`, then feed the helper's JSON string array through the normal completion UI.
   - `fzf` exit status 1 (no matches with `--exit-0`) is treated as a cancelled completion to avoid falling back to list mode.
 
 ### Startup Sourcing
