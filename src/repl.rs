@@ -1,4 +1,5 @@
 use std::borrow::Cow::{self, Borrowed, Owned};
+use std::cmp::Ordering as CmpOrdering;
 use std::collections::HashSet;
 use std::env;
 use std::io::Write;
@@ -894,14 +895,114 @@ fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
         }
     }
 
-    entries.sort_by(|a, b| {
-        let a_lower = a.display.to_ascii_lowercase();
-        let b_lower = b.display.to_ascii_lowercase();
-        a_lower
-            .cmp(&b_lower)
-            .then_with(|| a.display.cmp(&b.display))
-    });
+    entries.sort_by(|a, b| natural_name_cmp(&a.display, &b.display));
     entries
+}
+
+// Approximate eza's natural name sorting for filesystem completion.
+//
+// This fixes common cases like:
+// - transfer-4a-20251026
+// - transfer-2024-06-10
+//
+// But it is not identical to eza's natord-based ordering. One observed edge
+// case is /home/oboro/media/tmux_rec2/legacy/v2-0-archive, where eza sorts
+// names like "%5BP%5D%20dev1" before "0000000000-README.txt", while this
+// comparator puts the README first. If exact parity with eza is required, use
+// the same natord crate or another shared ordering implementation instead of
+// maintaining a hand-rolled comparator here.
+fn natural_name_cmp(a: &str, b: &str) -> CmpOrdering {
+    let mut a_chunks = NaturalChunks::new(a);
+    let mut b_chunks = NaturalChunks::new(b);
+
+    loop {
+        match (a_chunks.next(), b_chunks.next()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return CmpOrdering::Less,
+            (Some(_), None) => return CmpOrdering::Greater,
+            (Some(NaturalChunk::Digits(a_digits)), Some(NaturalChunk::Digits(b_digits))) => {
+                let ordering = compare_digit_chunks(a_digits, b_digits);
+                if ordering != CmpOrdering::Equal {
+                    return ordering;
+                }
+            }
+            (Some(NaturalChunk::Text(a_text)), Some(NaturalChunk::Text(b_text))) => {
+                let ordering = a_text
+                    .to_ascii_lowercase()
+                    .cmp(&b_text.to_ascii_lowercase())
+                    .then_with(|| a_text.cmp(b_text));
+                if ordering != CmpOrdering::Equal {
+                    return ordering;
+                }
+            }
+            (Some(NaturalChunk::Digits(_)), Some(NaturalChunk::Text(_))) => {
+                return CmpOrdering::Less;
+            }
+            (Some(NaturalChunk::Text(_)), Some(NaturalChunk::Digits(_))) => {
+                return CmpOrdering::Greater;
+            }
+        }
+    }
+}
+
+fn compare_digit_chunks(a: &str, b: &str) -> CmpOrdering {
+    let a_trimmed = a.trim_start_matches('0');
+    let b_trimmed = b.trim_start_matches('0');
+    let a_normalized = if a_trimmed.is_empty() { "0" } else { a_trimmed };
+    let b_normalized = if b_trimmed.is_empty() { "0" } else { b_trimmed };
+
+    a_normalized
+        .len()
+        .cmp(&b_normalized.len())
+        .then_with(|| a_normalized.cmp(b_normalized))
+        .then_with(|| a.len().cmp(&b.len()))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NaturalChunk<'a> {
+    Digits(&'a str),
+    Text(&'a str),
+}
+
+struct NaturalChunks<'a> {
+    text: &'a str,
+    offset: usize,
+}
+
+impl<'a> NaturalChunks<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { text, offset: 0 }
+    }
+}
+
+impl<'a> Iterator for NaturalChunks<'a> {
+    type Item = NaturalChunk<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.text.len() {
+            return None;
+        }
+
+        let start = self.offset;
+        let first = self.text[start..].chars().next()?;
+        self.offset += first.len_utf8();
+        let is_digit = first.is_ascii_digit();
+
+        while self.offset < self.text.len() {
+            let ch = self.text[self.offset..].chars().next()?;
+            if ch.is_ascii_digit() != is_digit {
+                break;
+            }
+            self.offset += ch.len_utf8();
+        }
+
+        let chunk = &self.text[start..self.offset];
+        Some(if is_digit {
+            NaturalChunk::Digits(chunk)
+        } else {
+            NaturalChunk::Text(chunk)
+        })
+    }
 }
 
 fn collect_completion_snapshot(state: &ShellState) -> CompletionSnapshot {
@@ -1083,6 +1184,32 @@ mod tests {
         let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
 
         assert_eq!(names, vec!["Alpha", "alpha", "beta"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn list_candidates_sorts_naturally() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("transfer-2024-06-10"), b"").unwrap();
+        fs::write(dir.join("transfer-4a-20251026"), b"").unwrap();
+        fs::write(dir.join("transfer-2024-09-03"), b"").unwrap();
+        fs::write(dir.join("README-2026"), b"").unwrap();
+
+        let dir_prefix = format!("{}/", dir.display());
+        let candidates = list_dir_candidates(&dir_prefix, false);
+        let names: Vec<String> = candidates.into_iter().map(|c| c.display).collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "README-2026",
+                "transfer-4a-20251026",
+                "transfer-2024-06-10",
+                "transfer-2024-09-03",
+            ]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
