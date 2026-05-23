@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::state::{
-    create_temp_file, debug_log_line_to, format_command, format_function_body, read_locals_file,
-    write_locals_file, FunctionBody, FunctionDef, ShellState, TempFileGuard,
+    FunctionBody, FunctionDef, ShellState, TempFileGuard, create_temp_file, debug_log_line_to,
+    format_command, format_function_body, read_locals_file, write_locals_file,
 };
-use crate::{execute_inline_block, FlowControl, ScriptContext};
+use crate::{FlowControl, ScriptContext, execute_inline_block};
 
 const FUNCTION_MAX_DEPTH: usize = 64;
 
@@ -81,7 +81,9 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
         }
     }
 
-    stdout.flush().map_err(|err| format!("failed to flush foreach output: {err}"))?;
+    stdout
+        .flush()
+        .map_err(|err| format!("failed to flush foreach output: {err}"))?;
 
     if exit_requested {
         std::process::exit(0);
@@ -130,8 +132,8 @@ pub fn run_block_worker(args: &[String]) -> Result<i32, String> {
     let opts = parse_block_worker_args(args)?;
     let mut state = read_locals_file(&opts.locals_path)
         .map_err(|err| format!("failed to load block locals: {err}"))?;
-    let block = read_block_file(&opts.block_path)
-        .map_err(|err| format!("failed to read block: {err}"))?;
+    let block =
+        read_block_file(&opts.block_path).map_err(|err| format!("failed to read block: {err}"))?;
     if block.contains('\n') {
         let mut ctx = ScriptContext {
             lines: block.lines().map(|s| s.to_string()).collect(),
@@ -218,10 +220,8 @@ pub fn parse_capture_worker_args(args: &[String]) -> Result<CaptureWorkerArgs, S
     }
 
     Ok(CaptureWorkerArgs {
-        script_path: script_path
-            .ok_or_else(|| "capture worker missing --script".to_string())?,
-        locals_path: locals_path
-            .ok_or_else(|| "capture worker missing --locals".to_string())?,
+        script_path: script_path.ok_or_else(|| "capture worker missing --script".to_string())?,
+        locals_path: locals_path.ok_or_else(|| "capture worker missing --locals".to_string())?,
     })
 }
 
@@ -258,8 +258,7 @@ pub fn parse_function_worker_args(args: &[String]) -> Result<FunctionWorkerArgs,
     Ok(FunctionWorkerArgs {
         name: name.ok_or_else(|| "function worker missing --name".to_string())?,
         args: func_args,
-        locals_path: locals_path
-            .ok_or_else(|| "function worker missing --locals".to_string())?,
+        locals_path: locals_path.ok_or_else(|| "function worker missing --locals".to_string())?,
     })
 }
 
@@ -287,8 +286,7 @@ pub fn parse_block_worker_args(args: &[String]) -> Result<BlockWorkerArgs, Strin
 
     Ok(BlockWorkerArgs {
         block_path: block_path.ok_or_else(|| "block worker missing --block".to_string())?,
-        locals_path: locals_path
-            .ok_or_else(|| "block worker missing --locals".to_string())?,
+        locals_path: locals_path.ok_or_else(|| "block worker missing --locals".to_string())?,
     })
 }
 
@@ -388,10 +386,7 @@ fn run_function_in_worker(
         FlowControl::Continue => return Err("continue not allowed in pipeline".into()),
     };
 
-    debug_log_line_to(
-        log_path.as_deref(),
-        &format!("exit: {cmd_text} -> {code}"),
-    );
+    debug_log_line_to(log_path.as_deref(), &format!("exit: {cmd_text} -> {code}"));
     Ok(code)
 }
 

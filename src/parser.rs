@@ -1,5 +1,3 @@
-
-
 pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
     let mut args = Vec::new();
     let mut current = String::new();
@@ -263,12 +261,7 @@ fn split_by_char(line: &str, delimiter: char) -> Vec<String> {
                 current.push(ch);
                 prev_was_space = false;
             }
-            '{'
-                if !in_double
-                    && !in_single
-                    && bracket_depth == 0
-                    && paren_depth == 0 =>
-            {
+            '{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 brace_depth += 1;
                 current.push(ch);
                 prev_was_space = false;
@@ -310,8 +303,13 @@ pub enum BraceParse {
         body: String,
         tail: Option<String>,
     },
-    Open { head: String, tail: String },
-    None { head: String },
+    Open {
+        head: String,
+        tail: String,
+    },
+    None {
+        head: String,
+    },
 }
 
 pub fn parse_brace_block(line: &str) -> BraceParse {
@@ -366,12 +364,7 @@ pub fn parse_brace_block(line: &str) -> BraceParse {
             ')' if paren_depth > 0 => {
                 paren_depth -= 1;
             }
-            '{'
-                if !in_double
-                    && !in_single
-                    && bracket_depth == 0
-                    && paren_depth == 0 =>
-            {
+            '{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 brace_start = Some(idx);
                 break;
             }
@@ -386,7 +379,7 @@ pub fn parse_brace_block(line: &str) -> BraceParse {
         None => {
             return BraceParse::None {
                 head: line.to_string(),
-            }
+            };
         }
     };
 
@@ -441,20 +434,10 @@ pub fn parse_brace_block(line: &str) -> BraceParse {
             ')' if paren_depth > 0 => {
                 paren_depth -= 1;
             }
-            '{'
-                if !in_double
-                    && !in_single
-                    && bracket_depth == 0
-                    && paren_depth == 0 =>
-            {
+            '{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 brace_depth += 1;
             }
-            '}'
-                if !in_double
-                    && !in_single
-                    && bracket_depth == 0
-                    && paren_depth == 0 =>
-            {
+            '}' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                 brace_depth -= 1;
                 if brace_depth == 0 {
                     end = Some(scan);
@@ -569,20 +552,10 @@ pub fn collect_brace_block(
                 ')' if paren_depth > 0 => {
                     paren_depth -= 1;
                 }
-                '{'
-                    if !in_double
-                        && !in_single
-                        && bracket_depth == 0
-                        && paren_depth == 0 =>
-                {
+                '{' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                     brace_depth += 1;
                 }
-                '}'
-                    if !in_double
-                        && !in_single
-                        && bracket_depth == 0
-                        && paren_depth == 0 =>
-                {
+                '}' if !in_double && !in_single && bracket_depth == 0 && paren_depth == 0 => {
                     brace_depth -= 1;
                     if brace_depth == 0 {
                         return Ok((block_lines, idx, None));
@@ -628,7 +601,11 @@ pub fn parse_foreach_line(
     for (idx, segment) in segments.iter().enumerate() {
         let brace = parse_brace_block(segment.trim());
         let (body, brace_block, brace_open, brace_tail) = match brace {
-            BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
+            BraceParse::Inline {
+                head,
+                body,
+                tail: _,
+            } => (head, Some(body), false, None),
             BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
             BraceParse::None { head } => (head, None, false, None),
         };

@@ -5,10 +5,10 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
-use std::sync::{Mutex, OnceLock};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rustyline::completion::{Completer as CompletionTrait, Pair};
 use rustyline::config::Configurer;
@@ -17,7 +17,7 @@ use rustyline::highlight::Highlighter;
 use rustyline::history::DefaultHistory;
 use rustyline::line_buffer::LineBuffer;
 use rustyline::{
-    At, Cmd, CompletionType, Completer, ConditionalEventHandler, Config, Context, EditMode, Editor,
+    At, Cmd, Completer, CompletionType, ConditionalEventHandler, Config, Context, EditMode, Editor,
     Event, EventContext, EventHandler, Helper, Hinter, InputMode, KeyCode, KeyEvent, Modifiers,
     Movement, RepeatCount, Result, Validator, Word,
 };
@@ -27,8 +27,8 @@ use crate::parser::parse_args;
 use crate::state::{CompletionRule, ReplBinding, ReplCompletionMode, ShellState};
 use crate::term::{cursor_column, print_prompt_spacer};
 use crate::{
-    build_prompt, maybe_auto_refresh_repl, process_line, run_named_function, RunResult,
-    DEFAULT_PROMPT,
+    DEFAULT_PROMPT, RunResult, build_prompt, maybe_auto_refresh_repl, process_line,
+    run_named_function,
 };
 
 const COLOR_RESET: &str = "\x1b[0m";
@@ -38,23 +38,8 @@ const COLOR_KEYWORD: &str = "\x1b[1;31m";
 const COLOR_PROMPT: &str = "\x1b[1;32m";
 const COLOR_DIR: &str = "\x1b[32m";
 const KEYWORDS: &[&str] = &[
-    "alias",
-    "break",
-    "cd",
-    "complete",
-    "continue",
-    "each",
-    "elif",
-    "else",
-    "eval",
-    "exit",
-    "export",
-    "for",
-    "foreach",
-    "if",
-    "set",
-    "unalias",
-    "while",
+    "alias", "break", "cd", "complete", "continue", "each", "elif", "else", "eval", "exit",
+    "export", "for", "foreach", "if", "set", "unalias", "while",
 ];
 
 struct FuzzyCompleter {
@@ -83,7 +68,9 @@ impl CompletionTrait for FuzzyCompleter {
         } else {
             word_start(line, pos)
         };
-        if fragment.starts_with('$') && !matches!(quote_ctx.as_ref(), Some(ctx) if ctx.quote == '\'') {
+        if fragment.starts_with('$')
+            && !matches!(quote_ctx.as_ref(), Some(ctx) if ctx.quote == '\'')
+        {
             let vars = {
                 let guard = self.snapshot.lock().unwrap();
                 guard.vars.clone()
@@ -126,9 +113,14 @@ impl CompletionTrait for FuzzyCompleter {
             let guard = self.snapshot.lock().unwrap();
             guard.rules.clone()
         };
-        if let Some(candidates) =
-            list_custom_completion_candidates(&rules, line, pos, start, fragment, quote_ctx.as_ref())
-        {
+        if let Some(candidates) = list_custom_completion_candidates(
+            &rules,
+            line,
+            pos,
+            start,
+            fragment,
+            quote_ctx.as_ref(),
+        ) {
             return complete_candidates(
                 candidates,
                 fragment,
@@ -142,7 +134,10 @@ impl CompletionTrait for FuzzyCompleter {
 
         let (expansion_chars, expansion_handler) = {
             let guard = self.snapshot.lock().unwrap();
-            (guard.expansion_chars.clone(), guard.expansion_handler.clone())
+            (
+                guard.expansion_chars.clone(),
+                guard.expansion_handler.clone(),
+            )
         };
         let file_fragment = filesystem_completion_fragment(
             fragment,
@@ -376,7 +371,8 @@ fn list_custom_completion_candidates(
 
     match run_completion_handler(rule, line, pos, fragment, tokens_before.len()) {
         Ok(items) => Some(
-            items.into_iter()
+            items
+                .into_iter()
                 .filter(|item| fragment.is_empty() || item.starts_with(fragment))
                 .map(|item| Pair {
                     display: item.clone(),
@@ -901,7 +897,9 @@ fn list_dir_candidates(dir_prefix: &str, include_hidden: bool) -> Vec<Pair> {
     entries.sort_by(|a, b| {
         let a_lower = a.display.to_ascii_lowercase();
         let b_lower = b.display.to_ascii_lowercase();
-        a_lower.cmp(&b_lower).then_with(|| a.display.cmp(&b.display))
+        a_lower
+            .cmp(&b_lower)
+            .then_with(|| a.display.cmp(&b.display))
     });
     entries
 }
@@ -951,29 +949,9 @@ fn collect_completion_snapshot(state: &ShellState) -> CompletionSnapshot {
 
 fn builtin_completion_names() -> &'static [&'static str] {
     &[
-        "alias",
-        "builtin",
-        "break",
-        "cd",
-        "complete",
-        "continue",
-        "def",
-        "each",
-        "elif",
-        "else",
-        "eval",
-        "exit",
-        "export",
-        "for",
-        "foreach",
-        "if",
-        "local",
-        "return",
-        "set",
-        "source",
-        "unalias",
-        "unset",
-        "while",
+        "alias", "builtin", "break", "cd", "complete", "continue", "def", "each", "elif", "else",
+        "eval", "exit", "export", "for", "foreach", "if", "local", "return", "set", "source",
+        "unalias", "unset", "while",
     ]
 }
 
@@ -1039,9 +1017,9 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_multi_replacement, completion_prefix_tokens, filesystem_completion_fragment,
-        list_custom_completion_candidates, list_dir_candidates, run_completion_handler,
-        unquote_completion_token, QuoteContext,
+        QuoteContext, build_multi_replacement, completion_prefix_tokens,
+        filesystem_completion_fragment, list_custom_completion_candidates, list_dir_candidates,
+        run_completion_handler, unquote_completion_token,
     };
     use crate::state::CompletionRule;
     use rustyline::completion::Pair;
@@ -1278,8 +1256,9 @@ mod tests {
             match_args: vec!["git".to_string(), "diff".to_string()],
         }];
 
-        assert!(list_custom_completion_candidates(&rules, "git diff fo", 11, 9, "fo", None)
-            .is_some());
+        assert!(
+            list_custom_completion_candidates(&rules, "git diff fo", 11, 9, "fo", None).is_some()
+        );
         assert!(
             list_custom_completion_candidates(&rules, "git diff --cached fo", 20, 18, "fo", None)
                 .is_none()
@@ -1312,7 +1291,11 @@ mod tests {
 }
 
 fn resolve_dir(dir_prefix: &str) -> std::path::PathBuf {
-    let path = if dir_prefix.is_empty() { "." } else { dir_prefix };
+    let path = if dir_prefix.is_empty() {
+        "."
+    } else {
+        dir_prefix
+    };
     std::path::Path::new(path).to_path_buf()
 }
 
@@ -1460,9 +1443,10 @@ fn run_fzf_once(
     let _ = move_cursor_to_eol();
 
     {
-        let stdin = child.stdin.as_mut().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "missing fzf stdin")
-        })?;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "missing fzf stdin"))?;
         for choice in choices {
             let _ = writeln!(stdin, "{choice}");
         }
@@ -1591,7 +1575,10 @@ fn write_fzf_stderr(
 fn format_fzf_args(args: &[&str]) -> String {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
-        if arg.chars().any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'') {
+        if arg
+            .chars()
+            .any(|ch| ch.is_whitespace() || ch == '"' || ch == '\'')
+        {
             let escaped = arg.replace('"', "\\\"");
             out.push(format!("\"{escaped}\""));
         } else {
@@ -1762,7 +1749,12 @@ impl Highlighter for ReplHelper {
         Owned(format!("{COLOR_PROMPT}{prompt}{COLOR_RESET}"))
     }
 
-    fn highlight_char(&self, _line: &str, _pos: usize, _kind: rustyline::highlight::CmdKind) -> bool {
+    fn highlight_char(
+        &self,
+        _line: &str,
+        _pos: usize,
+        _kind: rustyline::highlight::CmdKind,
+    ) -> bool {
         true
     }
 }
@@ -1804,23 +1796,32 @@ fn resolve_history_path(state: &ShellState) -> Option<PathBuf> {
         }
     }
     let home = env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".local").join("share").join("histfile"))
+    Some(
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("histfile"),
+    )
 }
 
 fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>> {
     let config_builder = Config::builder()
-        .edit_mode(if state.repl.vi_mode { EditMode::Vi } else { EditMode::Emacs })
+        .edit_mode(if state.repl.vi_mode {
+            EditMode::Vi
+        } else {
+            EditMode::Emacs
+        })
         .completion_type(CompletionType::List);
     let config = config_builder.build();
 
     let start_last = Arc::new(AtomicBool::new(false));
-        let helper = ReplHelper {
-            completer: FuzzyCompleter {
-                start_last: start_last.clone(),
-                mode: state.repl.completion_mode,
-                snapshot: Arc::new(Mutex::new(CompletionSnapshot::default())),
-            },
-        };
+    let helper = ReplHelper {
+        completer: FuzzyCompleter {
+            start_last: start_last.clone(),
+            mode: state.repl.completion_mode,
+            snapshot: Arc::new(Mutex::new(CompletionSnapshot::default())),
+        },
+    };
 
     let mut rl = Editor::with_config(config)?;
     rl.set_auto_add_history(false);
@@ -1846,7 +1847,10 @@ fn apply_bindings(
                 eprintln!("unshell: repl.bind ignored invalid key '{}'", binding.key);
                 continue;
             };
-            rl.bind_sequence(key_event, EventHandler::Conditional(Box::new(CommentAcceptHandler)));
+            rl.bind_sequence(
+                key_event,
+                EventHandler::Conditional(Box::new(CommentAcceptHandler)),
+            );
             continue;
         }
         let Some(key_event) = parse_key(&binding.key) else {
@@ -1865,7 +1869,10 @@ fn apply_bindings(
             continue;
         }
         let Some(cmd) = parse_action(&binding.action) else {
-            eprintln!("unshell: repl.bind ignored invalid action '{}'", binding.action);
+            eprintln!(
+                "unshell: repl.bind ignored invalid action '{}'",
+                binding.action
+            );
             continue;
         };
         rl.bind_sequence(key_event, EventHandler::Simple(cmd));

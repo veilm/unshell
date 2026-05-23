@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Write};
 use std::io::IsTerminal;
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -17,22 +17,24 @@ mod term;
 mod workers;
 
 use crate::expand::{
-    expand_tokens, expand_tokens_with_meta, is_var_char, is_var_start, ExpandedToken,
+    ExpandedToken, expand_tokens, expand_tokens_with_meta, is_var_char, is_var_start,
 };
 use crate::parser::{
-    append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block, parse_foreach_line,
-    split_indent, split_on_pipes, unindent_block_lines, BraceParse, LogicOp,
+    BraceParse, LogicOp, append_pipeline_tail, collect_brace_block, parse_args, parse_brace_block,
+    parse_foreach_line, split_indent, split_on_pipes, unindent_block_lines,
 };
 use crate::state::{
-    debug_log_line_to, format_command, format_function_body, lookup_var, read_locals_file,
-    read_shell_state_file, write_locals_file, write_shell_state_file, CompletionRule,
-    FunctionBody, FunctionDef, ShellState,
+    CompletionRule, FunctionBody, FunctionDef, ShellState, debug_log_line_to, format_command,
+    format_function_body, lookup_var, read_locals_file, read_shell_state_file, write_locals_file,
+    write_shell_state_file,
 };
-use crate::workers::{run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file};
-#[cfg(feature = "repl")]
-use crate::workers::trim_trailing_newline;
 #[cfg(not(feature = "repl"))]
 use crate::term::print_prompt_spacer;
+#[cfg(feature = "repl")]
+use crate::workers::trim_trailing_newline;
+use crate::workers::{
+    run_block_worker, run_capture_worker, run_foreach_worker, run_function_worker, write_block_file,
+};
 
 pub(crate) const DEFAULT_PROMPT: &str = "unshell> ";
 const FUNCTION_MAX_DEPTH: usize = 64;
@@ -207,7 +209,11 @@ fn report_exec_error(cmd: &str, err: &io::Error) {
 fn resolve_command_path(cmd: &str) -> Option<PathBuf> {
     if cmd.contains('/') {
         let path = PathBuf::from(cmd);
-        return if is_executable_file(&path) { Some(path) } else { None };
+        return if is_executable_file(&path) {
+            Some(path)
+        } else {
+            None
+        };
     }
     let path_var = env::var("PATH").ok()?;
     for dir in path_var.split(':') {
@@ -309,7 +315,9 @@ fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
         Err(err) => eprintln!("unshell: failed to load startup: {err}"),
     }
     maybe_print_refresh_notice(&mut state);
-    println!("unshell: compiled without rustyline repl; using minimal input (no line editing or completion)");
+    println!(
+        "unshell: compiled without rustyline repl; using minimal input (no line editing or completion)"
+    );
 
     loop {
         maybe_print_incomplete_marker(&mut stdout, &mut state);
@@ -334,10 +342,7 @@ fn run_repl_with_state(startup: &StartupConfig, mut state: ShellState) {
 }
 
 #[cfg(not(feature = "repl"))]
-fn maybe_print_incomplete_marker(
-    stdout: &mut io::Stdout,
-    state: &mut ShellState,
-) {
+fn maybe_print_incomplete_marker(stdout: &mut io::Stdout, state: &mut ShellState) {
     if state.needs_cursor_check {
         let _ = print_prompt_spacer(stdout);
         state.needs_cursor_check = false;
@@ -511,17 +516,17 @@ fn run_command_with_state(command: &str, mut state: ShellState) -> io::Result<()
 }
 
 fn source_file(path: &Path, state: &mut ShellState) -> Result<FlowControl, String> {
-    debug_log_source(state.options.debug_log_path.as_deref(), &path.display().to_string());
+    debug_log_source(
+        state.options.debug_log_path.as_deref(),
+        &path.display().to_string(),
+    );
     let file = File::open(path).map_err(|err| err.to_string())?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader
         .lines()
         .collect::<Result<_, _>>()
         .map_err(|err| err.to_string())?;
-    let mut ctx = ScriptContext {
-        lines,
-        state,
-    };
+    let mut ctx = ScriptContext { lines, state };
     ctx.execute_with_exit()
 }
 
@@ -540,7 +545,12 @@ fn load_startup(state: &mut ShellState, startup: &StartupConfig) -> Result<FlowC
         }
     }
     if let Ok(home) = env::var("HOME") {
-        candidates.push(Path::new(&home).join(".config").join("unshell").join("init"));
+        candidates.push(
+            Path::new(&home)
+                .join(".config")
+                .join("unshell")
+                .join("init"),
+        );
         candidates.push(Path::new(&home).join(".unshell").join("init"));
     }
 
@@ -666,7 +676,6 @@ fn prompt_command_output(command: &str, state: &mut ShellState) -> Result<String
         }
     }
 }
-
 
 pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
     let mut ctx = ScriptContext {
@@ -1051,12 +1060,7 @@ fn split_token_on_operators(token: &str, protected: bool) -> Vec<OpToken> {
             }
         }
 
-        if bracket_depth == 0
-            && paren_depth == 0
-            && brace_depth == 0
-            && !in_double
-            && !in_single
-        {
+        if bracket_depth == 0 && paren_depth == 0 && brace_depth == 0 && !in_double && !in_single {
             if ch == ';' {
                 if !current.is_empty() {
                     parts.push(OpToken::Word(WordToken {
@@ -1247,12 +1251,17 @@ fn parse_redirections(tokens: Vec<WordToken>) -> Result<(Vec<String>, Redirectio
     Ok((args, redirs))
 }
 
-fn parse_input_redirection(tokens: &[WordToken], idx: usize) -> Result<Option<(String, usize)>, String> {
+fn parse_input_redirection(
+    tokens: &[WordToken],
+    idx: usize,
+) -> Result<Option<(String, usize)>, String> {
     let token = &tokens[idx];
     if token.value != "<" {
         return Ok(None);
     }
-    let target = tokens.get(idx + 1).ok_or_else(|| "redirection missing destination".to_string())?;
+    let target = tokens
+        .get(idx + 1)
+        .ok_or_else(|| "redirection missing destination".to_string())?;
     if !target.protected && (target.value.contains('>') || target.value.contains('<')) {
         return Err("redirection operators must be separated by whitespace".into());
     }
@@ -1293,7 +1302,13 @@ fn parse_output_redirection(
         append,
     };
     let consumed = 2;
-    Ok(Some((OutputSpec { stream, redir: output }, consumed)))
+    Ok(Some((
+        OutputSpec {
+            stream,
+            redir: output,
+        },
+        consumed,
+    )))
 }
 
 fn parse_output_with_inline_target(value: &str) -> Result<Option<(OutputSpec, usize)>, String> {
@@ -1326,7 +1341,13 @@ fn parse_output_with_inline_target(value: &str) -> Result<Option<(OutputSpec, us
                 }
             };
             let output = OutputRedir { target, append };
-            return Ok(Some((OutputSpec { stream, redir: output }, 1)));
+            return Ok(Some((
+                OutputSpec {
+                    stream,
+                    redir: output,
+                },
+                1,
+            )));
         }
     }
 
@@ -1363,7 +1384,6 @@ fn apply_output_redirection(redirs: &mut Redirections, spec: OutputSpec) {
         }
     }
 }
-
 
 fn split_assignments(tokens: &[String]) -> (Vec<(String, String)>, &[String]) {
     let mut assignments = Vec::new();
@@ -1546,11 +1566,7 @@ fn run_pipeline_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<Run
             state.last_status = 0;
             return Ok(RunResult::Success(true));
         }
-        let remaining_tokens: Vec<WordToken> = args
-            .iter()
-            .skip(assignments_len)
-            .cloned()
-            .collect();
+        let remaining_tokens: Vec<WordToken> = args.iter().skip(assignments_len).cloned().collect();
         let (remaining_args, redirs) = parse_redirections(remaining_tokens)?;
         if remaining_args.is_empty() {
             return Err("empty command in pipeline".into());
@@ -1664,10 +1680,7 @@ fn build_pipeline_stages_from_word_segments(
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        let remaining_tokens: Vec<WordToken> = segment
-            .into_iter()
-            .skip(assignments_len)
-            .collect();
+        let remaining_tokens: Vec<WordToken> = segment.into_iter().skip(assignments_len).collect();
         let (args, redirs) = parse_redirections(remaining_tokens)?;
         if args.is_empty() {
             return Err("empty command in pipeline".into());
@@ -1781,8 +1794,7 @@ fn run_builtin_worker(args: &[String]) -> Result<i32, String> {
         idx += 1;
     }
 
-    let locals_path =
-        locals_path.ok_or_else(|| "builtin worker missing --locals".to_string())?;
+    let locals_path = locals_path.ok_or_else(|| "builtin worker missing --locals".to_string())?;
     let mut state =
         read_locals_file(&locals_path).map_err(|err| format!("failed to load locals: {err}"))?;
     for (name, value) in assignments {
@@ -1833,8 +1845,7 @@ fn unindent_block_lines_by(lines: &[String], tabs: usize) -> Vec<String> {
 fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "cd"
-            | "alias"
+        "cd" | "alias"
             | "complete"
             | "unalias"
             | "set"
@@ -1872,10 +1883,9 @@ fn run_builtin(args: &[String], state: &mut ShellState) -> Result<Option<RunResu
     if let Ok(Some(result)) = &result {
         let status = match result {
             RunResult::Return(code) => *code,
-            RunResult::Exit
-            | RunResult::Success(_)
-            | RunResult::Break
-            | RunResult::Continue => state.last_status,
+            RunResult::Exit | RunResult::Success(_) | RunResult::Break | RunResult::Continue => {
+                state.last_status
+            }
         };
         debug_log_exit(log_path.as_deref(), &cmd_text, status);
     }
@@ -1894,9 +1904,8 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
             } else {
                 args[1].clone()
             };
-            env::set_current_dir(&target).map_err(|err| {
-                format!("cd: failed to change directory to '{target}': {err}")
-            })?;
+            env::set_current_dir(&target)
+                .map_err(|err| format!("cd: failed to change directory to '{target}': {err}"))?;
             let cwd = env::current_dir()
                 .map_err(|err| format!("cd: failed to read current directory: {err}"))?;
             let _ = cwd;
@@ -2011,11 +2020,7 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
                     let enabled = match value.as_str() {
                         "true" => true,
                         "false" => false,
-                        _ => {
-                            return Err(
-                                "set: aliases.recursive expects 'true' or 'false'".into(),
-                            )
-                        }
+                        _ => return Err("set: aliases.recursive expects 'true' or 'false'".into()),
                     };
                     state.options.aliases_recursive = enabled;
                     state.last_status = 0;
@@ -2031,8 +2036,8 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
                         "false" => false,
                         _ => {
                             return Err(
-                                "set: subshells.trim_newline expects 'true' or 'false'".into(),
-                            )
+                                "set: subshells.trim_newline expects 'true' or 'false'".into()
+                            );
                         }
                     };
                     state.options.subshells_trim_newline = enabled;
@@ -2047,11 +2052,7 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
                     let enabled = match args[3].as_str() {
                         "on" => true,
                         "off" => false,
-                        _ => {
-                            return Err(
-                                "set: expansions.characters expects 'on' or 'off'".into(),
-                            )
-                        }
+                        _ => return Err("set: expansions.characters expects 'on' or 'off'".into()),
                     };
                     for ch in chars.chars() {
                         if enabled {
@@ -2167,12 +2168,18 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
                     if action == "off" {
                         state.repl.bindings.retain(|binding| binding.key != key);
                     } else {
-                        if let Some(existing) =
-                            state.repl.bindings.iter_mut().find(|binding| binding.key == key)
+                        if let Some(existing) = state
+                            .repl
+                            .bindings
+                            .iter_mut()
+                            .find(|binding| binding.key == key)
                         {
                             existing.action = action;
                         } else {
-                            state.repl.bindings.push(crate::state::ReplBinding { key, action });
+                            state
+                                .repl
+                                .bindings
+                                .push(crate::state::ReplBinding { key, action });
                         }
                     }
                     state.repl.generation += 1;
@@ -2343,7 +2350,10 @@ fn run_complete_builtin_expanded(
                 return Err("complete add: expected at least one MATCH argument".into());
             }
 
-            let rule = CompletionRule { program, match_args };
+            let rule = CompletionRule {
+                program,
+                match_args,
+            };
             if let Some(existing) = state
                 .repl
                 .completion_rules
@@ -2458,10 +2468,7 @@ fn build_pipeline_stages_from_segments(
         if remaining.is_empty() {
             return Err("empty command in pipeline".into());
         }
-        let remaining_tokens: Vec<WordToken> = words
-            .into_iter()
-            .skip(assignments_len)
-            .collect();
+        let remaining_tokens: Vec<WordToken> = words.into_iter().skip(assignments_len).collect();
         let (args, redirs) = parse_redirections(remaining_tokens)?;
         if args.is_empty() {
             return Err("empty command in pipeline".into());
@@ -2503,7 +2510,10 @@ struct PipelineResult {
     last_signal: Option<i32>,
 }
 
-fn run_pipeline(commands: Vec<CommandSpec>, state: &mut ShellState) -> Result<PipelineResult, String> {
+fn run_pipeline(
+    commands: Vec<CommandSpec>,
+    state: &mut ShellState,
+) -> Result<PipelineResult, String> {
     let mut children = Vec::new();
     let mut prev_read: Option<File> = None;
     let capture_output = capture_output_enabled(state);
@@ -2695,7 +2705,9 @@ fn foreach_stage_from_line(segment_line: &str) -> Result<Option<PipelineStage>, 
         return Err("foreach blocks in pipeline tails must use inline braces".into());
     }
     if let Some(tail) = brace_tail {
-        return Err(format!("unexpected trailing text after foreach block: {tail}"));
+        return Err(format!(
+            "unexpected trailing text after foreach block: {tail}"
+        ));
     }
     let Some(block) = brace_block else {
         return Err("foreach block missing braces in pipeline tail".into());
@@ -2776,9 +2788,7 @@ fn run_pipeline_stages(
                 let exe = env::current_exe()
                     .map_err(|err| format!("failed to resolve ush path: {err}"))?;
                 let mut cmd = Command::new(exe);
-                cmd.arg("--builtin-worker")
-                    .arg("--locals")
-                    .arg(locals);
+                cmd.arg("--builtin-worker").arg("--locals").arg(locals);
                 for (name, value) in assignments.iter() {
                     cmd.arg("--assign").arg(format!("{name}={value}"));
                 }
@@ -3004,10 +3014,7 @@ impl ForegroundGuard {
         if unsafe { libc::tcsetpgrp(tty_fd, pgrp) } != 0 {
             return None;
         }
-        Some(Self {
-            tty_fd,
-            shell_pgrp,
-        })
+        Some(Self { tty_fd, shell_pgrp })
     }
 }
 
@@ -3053,7 +3060,10 @@ fn configure_process_group(cmd: &mut Command, pgrp: Option<libc::pid_t>, job_con
     }
 }
 
-fn with_redirections<T>(redirs: &Redirections, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+fn with_redirections<T>(
+    redirs: &Redirections,
+    f: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
     if redirs.stdin.is_none() && redirs.stdout.is_none() && redirs.stderr.is_none() {
         return f();
     }
@@ -3171,7 +3181,10 @@ fn create_pipe() -> Result<(File, File), String> {
     let mut fds = [0; 2];
     let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if result != 0 {
-        return Err(format!("failed to create pipe: {}", io::Error::last_os_error()));
+        return Err(format!(
+            "failed to create pipe: {}",
+            io::Error::last_os_error()
+        ));
     }
     let read = unsafe { File::from_raw_fd(fds[0]) };
     let write = unsafe { File::from_raw_fd(fds[1]) };
@@ -3181,7 +3194,10 @@ fn create_pipe() -> Result<(File, File), String> {
 fn dup_fd(fd: i32) -> Result<i32, String> {
     let result = unsafe { libc::dup(fd) };
     if result < 0 {
-        return Err(format!("failed to dup fd {fd}: {}", io::Error::last_os_error()));
+        return Err(format!(
+            "failed to dup fd {fd}: {}",
+            io::Error::last_os_error()
+        ));
     }
     Ok(result)
 }
@@ -3189,7 +3205,10 @@ fn dup_fd(fd: i32) -> Result<i32, String> {
 fn dup2_fd(src: i32, dst: i32) -> Result<(), String> {
     let result = unsafe { libc::dup2(src, dst) };
     if result < 0 {
-        return Err(format!("failed to dup2 fd {src} -> {dst}: {}", io::Error::last_os_error()));
+        return Err(format!(
+            "failed to dup2 fd {src} -> {dst}: {}",
+            io::Error::last_os_error()
+        ));
     }
     Ok(())
 }
@@ -3334,25 +3353,25 @@ impl<'a> ScriptContext<'a> {
                             return Ok(BlockResult {
                                 next: idx + 1,
                                 flow: FlowControl::Exit,
-                            })
+                            });
                         }
                         RunResult::Return(code) => {
                             return Ok(BlockResult {
                                 next: idx + 1,
                                 flow: FlowControl::Return(code),
-                            })
+                            });
                         }
                         RunResult::Break => {
                             return Ok(BlockResult {
                                 next: idx + 1,
                                 flow: FlowControl::Break,
-                            })
+                            });
                         }
                         RunResult::Continue => {
                             return Ok(BlockResult {
                                 next: idx + 1,
                                 flow: FlowControl::Continue,
-                            })
+                            });
                         }
                     }
                 } else {
@@ -3495,13 +3514,15 @@ impl<'a> ScriptContext<'a> {
                 }
                 let name = &args[0];
                 if !is_valid_var_name(name) {
-                    return Err(format!("invalid function name '{}' on line {}", name, idx + 1));
+                    return Err(format!(
+                        "invalid function name '{}' on line {}",
+                        name,
+                        idx + 1
+                    ));
                 }
                 if let Some(tail) = brace_tail.as_deref() {
                     if !tail.trim().is_empty() {
-                        return Err(format!(
-                            "unexpected trailing text after def block: {tail}"
-                        ));
+                        return Err(format!("unexpected trailing text after def block: {tail}"));
                     }
                 }
                 if let Some(block) = brace_block {
@@ -3521,9 +3542,7 @@ impl<'a> ScriptContext<'a> {
                     let (block_lines, end_idx, tail_line) =
                         collect_brace_block(&self.lines, idx + 1, brace_tail)?;
                     if let Some(tail) = tail_line {
-                        return Err(format!(
-                            "unexpected trailing text after def block: {tail}"
-                        ));
+                        return Err(format!("unexpected trailing text after def block: {tail}"));
                     }
                     if should_execute {
                         self.state.functions.insert(
@@ -3613,87 +3632,87 @@ impl<'a> ScriptContext<'a> {
                 }
                 BraceParse::Open { head, tail } => {
                     let head_trim = head.trim_end();
-                if head_trim.is_empty() || head_trim.ends_with('|') {
-                    let (block_lines, end_idx, tail_line) =
-                        collect_brace_block(&self.lines, idx + 1, Some(tail))?;
-                    let block = block_lines.join("\n");
-                    let mut after = Vec::new();
-                    if let Some(tail_line) = tail_line.as_deref() {
-                        append_pipeline_tail(&mut after, tail_line)?;
-                    }
-                    if should_execute {
-                        if head_trim.is_empty() && after.is_empty() {
-                            let mut ctx = ScriptContext {
-                                lines: block_lines,
-                                state: self.state,
-                            };
-                            match ctx.execute_with_exit()? {
-                                FlowControl::Exit => {
+                    if head_trim.is_empty() || head_trim.ends_with('|') {
+                        let (block_lines, end_idx, tail_line) =
+                            collect_brace_block(&self.lines, idx + 1, Some(tail))?;
+                        let block = block_lines.join("\n");
+                        let mut after = Vec::new();
+                        if let Some(tail_line) = tail_line.as_deref() {
+                            append_pipeline_tail(&mut after, tail_line)?;
+                        }
+                        if should_execute {
+                            if head_trim.is_empty() && after.is_empty() {
+                                let mut ctx = ScriptContext {
+                                    lines: block_lines,
+                                    state: self.state,
+                                };
+                                match ctx.execute_with_exit()? {
+                                    FlowControl::Exit => {
+                                        return Ok(BlockResult {
+                                            next: end_idx + 1,
+                                            flow: FlowControl::Exit,
+                                        });
+                                    }
+                                    FlowControl::Return(code) => {
+                                        return Ok(BlockResult {
+                                            next: end_idx + 1,
+                                            flow: FlowControl::Return(code),
+                                        });
+                                    }
+                                    FlowControl::Break => {
+                                        return Ok(BlockResult {
+                                            next: end_idx + 1,
+                                            flow: FlowControl::Break,
+                                        });
+                                    }
+                                    FlowControl::Continue => {
+                                        return Ok(BlockResult {
+                                            next: end_idx + 1,
+                                            flow: FlowControl::Continue,
+                                        });
+                                    }
+                                    FlowControl::None => {}
+                                }
+                            } else {
+                                let mut stages = Vec::new();
+                                let head_before =
+                                    head_trim.strip_suffix('|').unwrap_or(head_trim).trim_end();
+                                if !head_before.is_empty() {
+                                    let before_segments = split_on_pipes(head_before)
+                                        .into_iter()
+                                        .map(|seg| seg.trim().to_string())
+                                        .filter(|seg| !seg.is_empty())
+                                        .collect::<Vec<_>>();
+                                    let mut before_stages = build_pipeline_stages_from_segments(
+                                        &before_segments,
+                                        self.state,
+                                    )?;
+                                    stages.append(&mut before_stages);
+                                }
+                                stages.push(PipelineStage::Block(InlineBlock {
+                                    block,
+                                    redirs: Redirections::default(),
+                                }));
+                                let mut after_stages =
+                                    build_pipeline_stages_from_segments(&after, self.state)?;
+                                stages.append(&mut after_stages);
+                                let result = run_pipeline_stages(stages, self.state)?;
+                                if should_exit_for_signal(
+                                    self.state,
+                                    result.last_signal,
+                                    self.state.last_status,
+                                    io::stdin().is_terminal(),
+                                ) {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Exit,
                                     });
                                 }
-                                FlowControl::Return(code) => {
-                                    return Ok(BlockResult {
-                                        next: end_idx + 1,
-                                        flow: FlowControl::Return(code),
-                                    });
-                                }
-                                FlowControl::Break => {
-                                    return Ok(BlockResult {
-                                        next: end_idx + 1,
-                                        flow: FlowControl::Break,
-                                    });
-                                }
-                                FlowControl::Continue => {
-                                    return Ok(BlockResult {
-                                        next: end_idx + 1,
-                                        flow: FlowControl::Continue,
-                                    });
-                                }
-                                FlowControl::None => {}
-                            }
-                        } else {
-                            let mut stages = Vec::new();
-                            let head_before = head_trim
-                                .strip_suffix('|')
-                                .unwrap_or(head_trim)
-                                .trim_end();
-                            if !head_before.is_empty() {
-                                let before_segments = split_on_pipes(head_before)
-                                    .into_iter()
-                                    .map(|seg| seg.trim().to_string())
-                                    .filter(|seg| !seg.is_empty())
-                                    .collect::<Vec<_>>();
-                                let mut before_stages =
-                                    build_pipeline_stages_from_segments(&before_segments, self.state)?;
-                                stages.append(&mut before_stages);
-                            }
-                            stages.push(PipelineStage::Block(InlineBlock {
-                                block,
-                                redirs: Redirections::default(),
-                            }));
-                            let mut after_stages =
-                                build_pipeline_stages_from_segments(&after, self.state)?;
-                            stages.append(&mut after_stages);
-                            let result = run_pipeline_stages(stages, self.state)?;
-                            if should_exit_for_signal(
-                                self.state,
-                                result.last_signal,
-                                self.state.last_status,
-                                io::stdin().is_terminal(),
-                            ) {
-                                return Ok(BlockResult {
-                                    next: end_idx + 1,
-                                    flow: FlowControl::Exit,
-                                });
                             }
                         }
+                        idx = end_idx + 1;
+                        continue;
                     }
-                    idx = end_idx + 1;
-                    continue;
-                }
                 }
                 BraceParse::None { .. } => {}
             }
@@ -3714,15 +3733,15 @@ impl<'a> ScriptContext<'a> {
                 if let Some(block) = brace_block {
                     if should_execute {
                         let mut stages = Vec::new();
-                        let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                        let mut before_stages =
+                            build_pipeline_stages_from_segments(&before, self.state)?;
                         stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: var_name.clone(),
                             block,
                             inline: true,
                         });
-                        let after_stages =
-                            build_pipeline_stages_from_segments(&after, self.state)?;
+                        let after_stages = build_pipeline_stages_from_segments(&after, self.state)?;
                         stages.extend(after_stages);
                         let result = run_pipeline_stages(stages, self.state)?;
                         if should_exit_for_signal(
@@ -3749,15 +3768,15 @@ impl<'a> ScriptContext<'a> {
                     }
                     if should_execute {
                         let mut stages = Vec::new();
-                        let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                        let mut before_stages =
+                            build_pipeline_stages_from_segments(&before, self.state)?;
                         stages.append(&mut before_stages);
                         stages.push(PipelineStage::Foreach {
                             var: var_name.clone(),
                             block: block_lines.join("\n"),
                             inline: false,
                         });
-                        let after_stages =
-                            build_pipeline_stages_from_segments(&after, self.state)?;
+                        let after_stages = build_pipeline_stages_from_segments(&after, self.state)?;
                         stages.extend(after_stages);
                         let result = run_pipeline_stages(stages, self.state)?;
                         if should_exit_for_signal(
@@ -3785,7 +3804,8 @@ impl<'a> ScriptContext<'a> {
 
                 if should_execute {
                     let mut stages = Vec::new();
-                    let mut before_stages = build_pipeline_stages_from_segments(&before, self.state)?;
+                    let mut before_stages =
+                        build_pipeline_stages_from_segments(&before, self.state)?;
                     stages.append(&mut before_stages);
                     let raw_lines = self.lines[block_start..block_end].to_vec();
                     let block_lines = unindent_block_lines(&raw_lines);
@@ -3815,7 +3835,11 @@ impl<'a> ScriptContext<'a> {
             if let Some(rest) = trimmed.strip_prefix("while ") {
                 let brace = parse_brace_block(rest);
                 let (condition, brace_block, brace_open, brace_tail) = match brace {
-                    BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
+                    BraceParse::Inline {
+                        head,
+                        body,
+                        tail: _,
+                    } => (head, Some(body), false, None),
                     BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
                     BraceParse::None { head } => (head, None, false, None),
                 };
@@ -3833,25 +3857,25 @@ impl<'a> ScriptContext<'a> {
                                     return Ok(BlockResult {
                                         next: idx + 1,
                                         flow: FlowControl::Exit,
-                                    })
+                                    });
                                 }
                                 RunResult::Return(code) => {
                                     return Ok(BlockResult {
                                         next: idx + 1,
                                         flow: FlowControl::Return(code),
-                                    })
+                                    });
                                 }
                                 RunResult::Break => {
                                     return Ok(BlockResult {
                                         next: idx + 1,
                                         flow: FlowControl::Break,
-                                    })
+                                    });
                                 }
                                 RunResult::Continue => {
                                     return Ok(BlockResult {
                                         next: idx + 1,
                                         flow: FlowControl::Continue,
-                                    })
+                                    });
                                 }
                             };
                             if !run_body {
@@ -3889,25 +3913,25 @@ impl<'a> ScriptContext<'a> {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Exit,
-                                    })
+                                    });
                                 }
                                 RunResult::Return(code) => {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Return(code),
-                                    })
+                                    });
                                 }
                                 RunResult::Break => {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Break,
-                                    })
+                                    });
                                 }
                                 RunResult::Continue => {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Continue,
-                                    })
+                                    });
                                 }
                             };
                             if !run_body {
@@ -3961,25 +3985,25 @@ impl<'a> ScriptContext<'a> {
                                 return Ok(BlockResult {
                                     next: block_end,
                                     flow: FlowControl::Exit,
-                                })
+                                });
                             }
                             RunResult::Return(code) => {
                                 return Ok(BlockResult {
                                     next: block_end,
                                     flow: FlowControl::Return(code),
-                                })
+                                });
                             }
                             RunResult::Break => {
                                 return Ok(BlockResult {
                                     next: block_end,
                                     flow: FlowControl::Break,
-                                })
+                                });
                             }
                             RunResult::Continue => {
                                 return Ok(BlockResult {
                                     next: block_end,
                                     flow: FlowControl::Continue,
-                                })
+                                });
                             }
                         };
                         if !run_body {
@@ -4002,7 +4026,11 @@ impl<'a> ScriptContext<'a> {
             if let Some(rest) = trimmed.strip_prefix("for ") {
                 let brace = parse_brace_block(rest);
                 let (body, brace_block, brace_open, brace_tail) = match brace {
-                    BraceParse::Inline { head, body, tail: _ } => (head, Some(body), false, None),
+                    BraceParse::Inline {
+                        head,
+                        body,
+                        tail: _,
+                    } => (head, Some(body), false, None),
                     BraceParse::Open { head, tail } => (head, None, true, Some(tail)),
                     BraceParse::None { head } => (head, None, false, None),
                 };
@@ -4014,7 +4042,11 @@ impl<'a> ScriptContext<'a> {
 
                 let var_name = &args[0];
                 if !is_valid_var_name(var_name) {
-                    return Err(format!("invalid for variable '{}' on line {}", var_name, idx + 1));
+                    return Err(format!(
+                        "invalid for variable '{}' on line {}",
+                        var_name,
+                        idx + 1
+                    ));
                 }
 
                 let list = expand_tokens(args[2..].to_vec(), &self.state)?;
@@ -4071,9 +4103,7 @@ impl<'a> ScriptContext<'a> {
                         }
                     }
                     if let Some(tail) = tail_line {
-                        return Err(format!(
-                            "unexpected trailing text after for block: {tail}"
-                        ));
+                        return Err(format!("unexpected trailing text after for block: {tail}"));
                     }
                     idx = end_idx + 1;
                     continue;
@@ -4279,12 +4309,8 @@ impl<'a> ScriptContext<'a> {
                     FlowControl::Exit => {}
                 }
                 if let Some(tail) = brace_inline_tail {
-                    let (exit, next_idx, _) = self.handle_else_chain_tail(
-                        Some(tail),
-                        block_start,
-                        indent_level,
-                        false,
-                    )?;
+                    let (exit, next_idx, _) =
+                        self.handle_else_chain_tail(Some(tail), block_start, indent_level, false)?;
                     return Ok((exit, next_idx, true));
                 }
                 let (exit, next_idx, _) =
@@ -4313,21 +4339,15 @@ impl<'a> ScriptContext<'a> {
                 match ctx.execute_with_exit()? {
                     FlowControl::Exit => return Ok((FlowControl::Exit, end_idx + 1, true)),
                     FlowControl::Return(code) => {
-                        return Ok((FlowControl::Return(code), end_idx + 1, true))
+                        return Ok((FlowControl::Return(code), end_idx + 1, true));
                     }
                     FlowControl::Break => return Ok((FlowControl::Break, end_idx + 1, true)),
-                    FlowControl::Continue => {
-                        return Ok((FlowControl::Continue, end_idx + 1, true))
-                    }
+                    FlowControl::Continue => return Ok((FlowControl::Continue, end_idx + 1, true)),
                     FlowControl::None => {}
                 }
                 if let Some(tail) = tail_line {
-                    let (exit, next_idx, _) = self.handle_else_chain_tail(
-                        Some(tail),
-                        end_idx + 1,
-                        indent_level,
-                        false,
-                    )?;
+                    let (exit, next_idx, _) =
+                        self.handle_else_chain_tail(Some(tail), end_idx + 1, indent_level, false)?;
                     return Ok((exit, next_idx, true));
                 }
                 let (exit, next_idx, _) =
@@ -4404,7 +4424,6 @@ impl<'a> ScriptContext<'a> {
         idx
     }
 }
-
 
 #[cfg(not(feature = "repl"))]
 fn print_prompt(stdout: &mut io::Stdout) -> io::Result<()> {

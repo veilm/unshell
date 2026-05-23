@@ -123,13 +123,8 @@ impl ShellState {
     }
 
     pub fn set_alias(&mut self, name: &str, value: String, global: bool) {
-        self.aliases.insert(
-            name.to_string(),
-            AliasEntry {
-                value,
-                global,
-            },
-        );
+        self.aliases
+            .insert(name.to_string(), AliasEntry { value, global });
     }
 
     pub fn remove_alias(&mut self, name: &str) -> bool {
@@ -278,9 +273,7 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
             }
             FunctionBody::Block(lines)
         };
-        state
-            .functions
-            .insert(name, FunctionDef { body });
+        state.functions.insert(name, FunctionDef { body });
     }
     let positional_len = read_u32(&mut file)? as usize;
     state.positional = Vec::with_capacity(positional_len);
@@ -478,9 +471,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
             }
             FunctionBody::Block(lines)
         };
-        state
-            .functions
-            .insert(name, FunctionDef { body });
+        state.functions.insert(name, FunctionDef { body });
     }
     let positional_len = read_u32(&mut file)? as usize;
     state.positional = Vec::with_capacity(positional_len);
@@ -500,7 +491,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid repl completion mode",
-            ))
+            ));
         }
     };
     state.repl.bracketed_paste = read_bool(&mut file)?;
@@ -514,10 +505,10 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
             for _ in 0..match_len {
                 match_args.push(read_string(&mut file, "repl completion match arg")?);
             }
-            state
-                .repl
-                .completion_rules
-                .push(CompletionRule { program, match_args });
+            state.repl.completion_rules.push(CompletionRule {
+                program,
+                match_args,
+            });
         }
     }
     let binding_len = read_u32(&mut file)? as usize;
@@ -687,10 +678,6 @@ fn read_string<R: Read>(reader: &mut R, label: &str) -> io::Result<String> {
     let value_len = read_u32(reader)? as usize;
     let mut value_buf = vec![0u8; value_len];
     reader.read_exact(&mut value_buf)?;
-    String::from_utf8(value_buf).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{label} not utf-8"),
-        )
-    })
+    String::from_utf8(value_buf)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("{label} not utf-8")))
 }

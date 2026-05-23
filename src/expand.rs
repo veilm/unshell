@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process::Command;
 
 use crate::parser::parse_args;
-use crate::state::{lookup_var, ShellState};
+use crate::state::{ShellState, lookup_var};
 use crate::workers::run_capture;
 
 #[derive(Clone, Debug)]
@@ -147,8 +147,9 @@ fn expand_tokens_with_meta_inner(
             continue;
         }
 
-        let protected =
-            token.contains('"') || token.contains('\'') || (!from_spread && token_has_expansion_sigil(&token));
+        let protected = token.contains('"')
+            || token.contains('\'')
+            || (!from_spread && token_has_expansion_sigil(&token));
         let allow_split = from_spread || token_contains_operator(&token);
         let value = if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
             token[1..token.len() - 1].to_string()
@@ -355,8 +356,8 @@ pub fn expand_unquoted_token(token: &str, state: &ShellState) -> Result<String, 
 
         if ch == '[' {
             if let Some((capture, next_idx)) = read_bracket_capture_chars(&chars, idx + 1) {
-                let value = run_capture(&capture, state)
-                    .map_err(|err| format!("capture failed: {err}"))?;
+                let value =
+                    run_capture(&capture, state).map_err(|err| format!("capture failed: {err}"))?;
                 result.push_str(&value);
                 idx = next_idx;
                 continue;
@@ -605,7 +606,9 @@ fn should_expand_with_handler(token: &str, state: &ShellState) -> bool {
     if state.options.expansions_chars.is_empty() {
         return false;
     }
-    token.chars().any(|ch| state.options.expansions_chars.contains(&ch))
+    token
+        .chars()
+        .any(|ch| state.options.expansions_chars.contains(&ch))
 }
 
 fn run_expansion_handler(token: &str, state: &ShellState) -> Result<Vec<String>, String> {
@@ -690,7 +693,9 @@ fn parse_json_string<I: Iterator<Item = char>>(
         match ch {
             '"' => return Ok(result),
             '\\' => {
-                let escaped = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                let escaped = chars
+                    .next()
+                    .ok_or_else(|| "invalid json escape".to_string())?;
                 match escaped {
                     '"' => result.push('"'),
                     '\\' => result.push('\\'),
@@ -702,11 +707,15 @@ fn parse_json_string<I: Iterator<Item = char>>(
                     'u' => {
                         let code = parse_json_unicode_escape(chars)?;
                         if (0xD800..=0xDBFF).contains(&code) {
-                            let next = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                            let next = chars
+                                .next()
+                                .ok_or_else(|| "invalid json escape".to_string())?;
                             if next != '\\' {
                                 return Err("invalid json escape".into());
                             }
-                            let next = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
+                            let next = chars
+                                .next()
+                                .ok_or_else(|| "invalid json escape".to_string())?;
                             if next != 'u' {
                                 return Err("invalid json escape".into());
                             }
@@ -742,8 +751,12 @@ fn parse_json_unicode_escape<I: Iterator<Item = char>>(
 ) -> Result<u16, String> {
     let mut value: u16 = 0;
     for _ in 0..4 {
-        let ch = chars.next().ok_or_else(|| "invalid json escape".to_string())?;
-        let digit = ch.to_digit(16).ok_or_else(|| "invalid json escape".to_string())?;
+        let ch = chars
+            .next()
+            .ok_or_else(|| "invalid json escape".to_string())?;
+        let digit = ch
+            .to_digit(16)
+            .ok_or_else(|| "invalid json escape".to_string())?;
         value = (value << 4) | digit as u16;
     }
     Ok(value)
@@ -757,7 +770,10 @@ mod tests {
     fn parses_unicode_escape() {
         let input = "[\"\\u3089\\u304f\\u3044\\u3061\"]";
         let parsed = parse_json_string_array(input).expect("parse unicode escape");
-        assert_eq!(parsed, vec![String::from("\u{3089}\u{304f}\u{3044}\u{3061}")]);
+        assert_eq!(
+            parsed,
+            vec![String::from("\u{3089}\u{304f}\u{3044}\u{3061}")]
+        );
     }
 
     #[test]

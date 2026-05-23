@@ -1,5 +1,5 @@
-use std::io::{self, Write};
 use std::io::IsTerminal;
+use std::io::{self, Write};
 
 #[cfg(unix)]
 pub fn cursor_column() -> Option<u16> {
