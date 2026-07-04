@@ -374,7 +374,6 @@ fn list_custom_completion_candidates(
         Ok(items) => Some(
             items
                 .into_iter()
-                .filter(|item| fragment.is_empty() || item.starts_with(fragment))
                 .map(|item| Pair {
                     display: item.clone(),
                     replacement: item,
@@ -1412,6 +1411,36 @@ mod tests {
         };
         let items = run_completion_handler(&rule, "git diff fo", 11, "fo", 2).unwrap();
         assert_eq!(items, vec!["git|diff|fo|11|2".to_string()]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn custom_completion_keeps_non_prefix_candidates_for_fzf() {
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let handler = dir.join("complete-handler.sh");
+        fs::write(
+            &handler,
+            "#!/bin/sh\nprintf '[\"xfoo\",\"yfoo\",\"bar\"]'\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&handler).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&handler, perms).unwrap();
+
+        let rules = vec![CompletionRule {
+            program: handler.display().to_string(),
+            match_args: vec!["ptts".to_string()],
+        }];
+        let items =
+            list_custom_completion_candidates(&rules, "ptts foo", 8, 5, "foo", None).unwrap();
+        let replacements: Vec<String> = items.into_iter().map(|item| item.replacement).collect();
+
+        assert_eq!(
+            replacements,
+            vec!["xfoo".to_string(), "yfoo".to_string(), "bar".to_string()]
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

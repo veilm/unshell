@@ -56,7 +56,7 @@ Resolution order:
 - Command completion triggers in command position (first word of a pipeline segment) and looks at builtins, functions, aliases, and `$PATH`.
 - Exact custom completion rules can be registered with `complete add --exec PROGRAM MATCH...`.
 - A custom rule applies only when the words before the current fragment exactly match `MATCH...`.
-- When a custom rule matches, unshell runs `PROGRAM MATCH...`, expects a JSON array of strings on stdout, prefix-filters those results against the current fragment, and sends the remaining candidates through the normal list/fzf flow.
+- When a custom rule matches, unshell runs `PROGRAM MATCH...`, expects a JSON array of strings on stdout, and sends those candidates through the normal list/fzf flow using the current fragment as the query.
 - The default installed init registers `/usr/local/bin/ush-completion-handler` for `rmdir`, so when that handler is installed, `rmdir <tab>` offers only directories.
 
 Example:

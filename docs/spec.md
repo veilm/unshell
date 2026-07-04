@@ -378,7 +378,7 @@ complete remove git diff
   - `USH_COMP_POINT`: the cursor position as a byte offset into `USH_COMP_LINE`.
   - `USH_COMP_WORD`: the current word fragment being completed, without surrounding quote delimiters.
   - `USH_COMP_CWORD`: the zero-based word index within the current pipeline segment.
-- The shell prefix-filters helper results against `USH_COMP_WORD`, then feeds the remaining candidates through the existing list/fzf UI, quoting, and multi-select behavior.
+- The shell feeds helper results through the existing list/fzf UI, quoting, and multi-select behavior, using `USH_COMP_WORD` as the query.
 - If the handler exits non-zero or emits invalid JSON, completion fails for that keypress and the shell reports the error instead of silently falling back to file completion.
 - The shell parses the current pipeline segment with normal shell tokenization when deciding whether a rule matches, so quoted arguments are matched as single argv elements when needed.
 - Rule matching ignores aliases in v1; it uses the literal argv typed for the current pipeline segment after normal tokenization.
