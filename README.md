@@ -83,6 +83,12 @@ a minimal shell. concise syntax, very little bloat while staying extensible
 	# fu@3 -> "fufufu", or anything else you want
 	# Gemini 3's ideas: s3://bucket/* and pkg@latest
 	```
+- small stream helpers stay outside the shell core
+	```bash
+	# tmpf writes stdin to a temp file and prints the filename,
+	# handy for commands that insist on path arguments
+	grep -v -f [seq 10 | tmpf] foo.py
+	```
 
 more info: [full spec](./docs/spec.md)
 

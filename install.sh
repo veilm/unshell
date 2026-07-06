@@ -63,6 +63,7 @@ install_cmd "mkdir -p \"$bin_dir\""
 install_cmd "install -m755 util/expansion_handler.py \"$bin_dir/ush-expansion-handler\""
 install_cmd "install -m755 util/completion_handler.py \"$bin_dir/ush-completion-handler\""
 install_cmd "install -m755 util/quote \"$bin_dir/ush-quote\""
+install_cmd "install -m755 util/tmpf \"$bin_dir/ush-tmpf\""
 
 install_cmd "if [ -f \"$bin_dir/ush\" ] && cmp -s target/release/ush \"$bin_dir/ush\"; then \
     echo \"ush unchanged; skipping install.\"; \

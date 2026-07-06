@@ -264,14 +264,16 @@ echo foo@bar{.txt,.log}
 **Current implementation:** `set expansions.characters CHARS on|off` controls which characters trigger expansion; `set expansions.handler ...` sets the handler command and arguments. The handler must return a JSON array of UTF-8 strings to splice into the argument list (`\\u` escapes are supported); handler failures or invalid JSON abort the command.
 
 ### External String & Quoting Utilities
-- Utilities such as `s` (string transforms) and `quote` (turn newline-separated input into properly quoted shell tokens) ship as standalone Rust binaries.
+- Utilities such as `s` (string transforms), `quote` (turn newline-separated input into properly quoted shell tokens), and `tmpf` (write stdin to a temp file and print the path) ship as standalone binaries or scripts.
 - `quote`'s contract: read stdin, treat each line as a record, emit a space-separated list where each record is wrapped in quotes and internal quotes/backslashes are escaped so `...` can safely re-tokenize the output.
+- `tmpf`'s contract: read stdin as bytes, write it to a newly-created temp file, and emit the filename with a trailing newline so captures can pass the file to commands that require path arguments.
 - Additional helpers (like a configurable-delimiter `split`) can exist in user space, but the shell core remains agnostic.
 ```bash
 title=$(s $raw_title trim)
 ls ...[ls | quote]
 for path in ...[cat files.list | quote]
 	rm $path
+grep -v -f [seq 10 | tmpf] foo.py
 ```
 
 ### Minimal Built-ins & Aliases
@@ -428,6 +430,7 @@ The shell sources the first existing init file from this list:
 4. `$HOME/.unshell/init`
 
 `./install.sh` will install `util/unshell_init` into `/etc/unshell/init` if it does not already exist.
+The default init aliases installed helper commands such as `ush-quote` and `ush-tmpf` to their short names.
 The default init registers `/usr/local/bin/ush-completion-handler` for `rmdir` when the handler exists, so `rmdir` completion lists directories rather than regular files.
 
 Flags:
