@@ -97,6 +97,15 @@ files="-la ./bin \"./my file.txt\""
 ls ...$files
 ```
 
+### Line Spread Operator `..`
+- `..[cmd]`, `..$(cmd)`, and `..$var` split expanded output on newlines and splice the lines into the argument list.
+- Each line is an atomic argument: spaces, quotes, variables, captures, and command operators in it are not interpreted again.
+- Empty output produces no arguments. Empty lines between non-empty lines produce empty arguments, while a trailing line ending does not produce an extra argument.
+- Only `..` followed by `[` or `$` invokes line spreading, so relative paths such as `../src` remain ordinary arguments.
+```bash
+mv ..[fd report] targetdir/
+```
+
 ### Command Substitution with Square Brackets
 Tokens that start with `[` and contain more than one character run as captures:
 - `[cmd args]` executes `cmd`, captures stdout, trims a single trailing newline (configurable), and injects the result as one argument.

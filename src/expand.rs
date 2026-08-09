@@ -133,6 +133,20 @@ fn expand_tokens_with_meta_inner(
             continue;
         }
 
+        if let Some(suffix) = token.strip_prefix("..")
+            && (suffix.starts_with('[') || suffix.starts_with('$'))
+        {
+            let source = expand_unquoted_token(suffix, state)?;
+            for line in source.lines() {
+                expanded.push(ExpandedToken {
+                    value: line.to_string(),
+                    protected: true,
+                    allow_split: false,
+                });
+            }
+            continue;
+        }
+
         if token == "$*" {
             if state.positional.is_empty() {
                 continue;
