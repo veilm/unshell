@@ -30,6 +30,11 @@ a minimal shell. concise syntax, very little bloat while staying extensible
 	ending="| tac"
 	seq 5 ...$ending
 	```
+- line spreading with `..`: turn newline-delimited output into atomic arguments
+	```bash
+	# spaces and shell syntax within each filename remain literal
+	mv ..[fd report] targetdir/
+	```
 - square-brackets as a shorthand for subshells
 	```bash
 	# equivalent to echo $(pwd). [] is much faster to type than $()

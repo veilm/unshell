@@ -1,0 +1,9 @@
+printf '<%s>|' ..[printf '%s\n' one 'with spaces' 'cash$HOME' 'semi;colon' '' last]
+echo
+records=[printf '%s\n' alpha 'beta gamma']
+printf '<%s>|' ..$records
+echo
+printf '<%s>|' ..$(printf '%s\n' delta 'epsilon zeta')
+echo
+sh -c 'printf "count=%s\n" "$#"' marker ..[printf '']
+printf '%s\n' ../path
