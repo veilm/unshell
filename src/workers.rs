@@ -53,8 +53,8 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
         if opts.inline {
             match execute_inline_block(&block, &mut state)? {
                 FlowControl::Return(_) => return Err("return not allowed in foreach".into()),
-                FlowControl::Break => return Err("break not allowed in foreach".into()),
-                FlowControl::Continue => return Err("continue not allowed in foreach".into()),
+                FlowControl::Break => break,
+                FlowControl::Continue => continue,
                 FlowControl::Exit | FlowControl::None => {}
             }
         } else {
@@ -70,12 +70,8 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
                 FlowControl::Return(_) => {
                     return Err("return not allowed in foreach".into());
                 }
-                FlowControl::Break => {
-                    return Err("break not allowed in foreach".into());
-                }
-                FlowControl::Continue => {
-                    return Err("continue not allowed in foreach".into());
-                }
+                FlowControl::Break => break,
+                FlowControl::Continue => continue,
                 FlowControl::None => {}
             }
         }
