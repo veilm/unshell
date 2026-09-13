@@ -96,6 +96,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
 
 [[package]]
+name = "natord-plus-plus"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "66f8ac0a79782d13e4ec2f955113676d786539965b3764e06fb4e107dcc3da64"
+
+[[package]]
 name = "nibble_vec"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -227,6 +233,7 @@ name = "unshell"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "natord-plus-plus",
  "rustyline",
 ]
 
