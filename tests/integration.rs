@@ -1,6 +1,9 @@
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 struct Fixture {
     name: String,
@@ -102,4 +105,48 @@ fn sigint_resets_when_parent_ignores() {
         actual_stderr, stderr,
         "stderr mismatch for sigint_reset fixture"
     );
+}
+
+#[test]
+fn foreach_break_closes_large_upstream() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ush"))
+        .arg("--norc")
+        .arg("-c")
+        .arg("seq 100000 | foreach line { break }\necho done")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run foreach break test");
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("failed to poll ush") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("foreach break left the upstream process blocked");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    let mut stdout = String::new();
+    child
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut stdout)
+        .expect("stdout not readable");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .expect("stderr not readable");
+
+    assert!(status.success(), "ush failed: {stderr}");
+    assert_eq!(stdout, "done\n");
+    assert_eq!(stderr, "");
 }

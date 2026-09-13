@@ -3179,7 +3179,7 @@ fn file_from_fd(fd: i32) -> Result<File, String> {
 
 fn create_pipe() -> Result<(File, File), String> {
     let mut fds = [0; 2];
-    let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    let result = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
     if result != 0 {
         return Err(format!(
             "failed to create pipe: {}",
