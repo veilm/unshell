@@ -242,6 +242,7 @@ while [ $count -lt 3 ]
 ### Stream Loops: `foreach`
 - `cmd | foreach name` treats stdin as a stream of records (newline-delimited), assigning each trimmed line to `name` and executing the block for each row.
 - The block **does not** implicitly forward the original line; authors must `echo` (or otherwise emit) data if downstream stages should receive anything.
+- `break` stops consuming input and exits the `foreach`; `continue` skips to the next input line.
 - `foreach` composes naturally inside pipelines, albeit in a child process, meaning mutations do not leak to the parent shell.
 - Tab-indented blocks are only allowed when `foreach` is the final pipeline stage; use braces to continue piping.
 ```bash

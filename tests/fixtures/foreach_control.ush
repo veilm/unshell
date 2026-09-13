@@ -1,0 +1,9 @@
+printf '%s\n' 1 2 3 | foreach item { echo "inline-break:$item"; break }
+printf '%s\n' 1 2 3 | foreach item { continue; echo inline-unreachable }
+printf '%s\n' 1 2 3 | foreach item
+	echo "block-break:$item"
+	break
+printf '%s\n' 1 2 3 | foreach item
+	continue
+	echo block-unreachable
+echo after
