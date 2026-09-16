@@ -593,7 +593,7 @@ pub(crate) fn maybe_auto_refresh_repl(state: &mut ShellState) -> Result<(), Stri
 fn refresh_repl_inner(state: &mut ShellState, notice: &str) -> Result<(), String> {
     let (state_path, _guard) = write_shell_state_file(state)
         .map_err(|err| format!("failed to write refresh state: {err}"))?;
-    let mut cmd = build_refresh_command()?;
+    let mut cmd = build_self_command();
     if !notice.trim().is_empty() {
         unsafe {
             env::set_var(REFRESH_NOTICE_ENV, notice);
@@ -618,27 +618,26 @@ fn self_exe_missing() -> bool {
     }
 }
 
-#[cfg(feature = "repl")]
-fn build_refresh_command() -> Result<Command, String> {
+pub(crate) fn build_self_command() -> Command {
     if let Ok(path) = env::var("USH_REEXEC_EXE") {
         if !path.trim().is_empty() {
-            return Ok(Command::new(path));
+            return Command::new(path);
         }
     }
     if let Some(arg0) = env::args().next() {
         if arg0.contains('/') {
             let path = Path::new(&arg0);
             if path.exists() {
-                return Ok(Command::new(path));
+                return Command::new(path);
             }
         }
     }
     if let Ok(path) = env::current_exe() {
         if path.exists() && !path.to_string_lossy().ends_with(" (deleted)") {
-            return Ok(Command::new(path));
+            return Command::new(path);
         }
     }
-    Ok(Command::new("ush"))
+    Command::new("ush")
 }
 
 #[cfg(feature = "repl")]
@@ -2785,9 +2784,7 @@ fn run_pipeline_stages(
                 let locals = locals_path
                     .as_ref()
                     .ok_or_else(|| "missing locals path for builtin".to_string())?;
-                let exe = env::current_exe()
-                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
-                let mut cmd = Command::new(exe);
+                let mut cmd = build_self_command();
                 cmd.arg("--builtin-worker").arg("--locals").arg(locals);
                 for (name, value) in assignments.iter() {
                     cmd.arg("--assign").arg(format!("{name}={value}"));
@@ -2799,9 +2796,7 @@ fn run_pipeline_stages(
                 let locals = locals_path
                     .as_ref()
                     .ok_or_else(|| "missing locals path for function".to_string())?;
-                let exe = env::current_exe()
-                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
-                let mut cmd = Command::new(exe);
+                let mut cmd = build_self_command();
                 cmd.arg("--function-worker")
                     .arg("--locals")
                     .arg(locals)
@@ -2818,9 +2813,7 @@ fn run_pipeline_stages(
                 let (block_path, guard) = write_block_file(&spec.block)
                     .map_err(|err| format!("failed to write pipeline block: {err}"))?;
                 block_guards.push(guard);
-                let exe = env::current_exe()
-                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
-                let mut cmd = Command::new(exe);
+                let mut cmd = build_self_command();
                 cmd.arg("--block-worker")
                     .arg("--block")
                     .arg(block_path)
@@ -2829,15 +2822,13 @@ fn run_pipeline_stages(
                 (cmd, spec.redirs.clone(), "block".to_string(), None)
             }
             PipelineStage::Foreach { var, block, inline } => {
-                let exe = env::current_exe()
-                    .map_err(|err| format!("failed to resolve ush path: {err}"))?;
                 let locals = locals_path
                     .as_ref()
                     .ok_or_else(|| "missing locals path for foreach".to_string())?;
                 let (block_path, guard) = write_block_file(block)
                     .map_err(|err| format!("failed to write foreach block: {err}"))?;
                 block_guards.push(guard);
-                let mut cmd = Command::new(exe);
+                let mut cmd = build_self_command();
                 cmd.arg("--foreach-worker")
                     .arg("--var")
                     .arg(var)
