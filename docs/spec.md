@@ -415,6 +415,7 @@ USH_COMP_CWORD=2
 - If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
 - `refresh-repl` re-execs into a new `ush` binary, preserving shell state (vars, aliases, functions, repl settings, in-memory history) without re-sourcing startup files.
 - If the running executable has been replaced/removed (e.g., after `install.sh`), the REPL auto-refreshes before rendering the next prompt and prints a one-line notice.
+- If a command is submitted while the old executable is waiting for input, capture and pipeline workers use the replacement executable so the command can finish before the REPL refreshes.
 
 - **Current implementation:**
   - `repl.mode`, `repl.bracketed_paste`, `repl.completion.mode`, `repl.prompt.command`, `repl.history.file`, and `repl.bind` update the Rustyline session.

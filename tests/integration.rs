@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 struct Fixture {
     name: String,
@@ -149,4 +150,46 @@ fn foreach_break_closes_large_upstream() {
     assert!(status.success(), "ush failed: {stderr}");
     assert_eq!(stdout, "done\n");
     assert_eq!(stderr, "");
+}
+
+#[test]
+fn capture_uses_replacement_binary_after_running_executable_is_deleted() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ush-replaced-binary-{nanos}"));
+    fs::create_dir(&dir).unwrap();
+    let old_exe = dir.join("ush-old");
+    fs::copy(env!("CARGO_BIN_EXE_ush"), &old_exe).unwrap();
+
+    let replacement_dir = Path::new(env!("CARGO_BIN_EXE_ush")).parent().unwrap();
+    let path = format!(
+        "{}:{}",
+        replacement_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let child = Command::new(&old_exe)
+        .arg("--norc")
+        .arg("-c")
+        .arg("sleep 0.2\necho [printf capture-ok]")
+        .env("PATH", path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start copied ush");
+
+    fs::remove_file(&old_exe).unwrap();
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait for copied ush");
+    fs::remove_dir(&dir).unwrap();
+
+    assert!(
+        output.status.success(),
+        "ush failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "capture-ok\n");
+    assert_eq!(String::from_utf8(output.stderr).unwrap(), "");
 }

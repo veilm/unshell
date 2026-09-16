@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::state::{
     FunctionBody, FunctionDef, ShellState, TempFileGuard, create_temp_file, debug_log_line_to,
     format_command, format_function_body, read_locals_file, write_locals_file,
 };
-use crate::{FlowControl, ScriptContext, execute_inline_block};
+use crate::{FlowControl, ScriptContext, build_self_command, execute_inline_block};
 
 const FUNCTION_MAX_DEPTH: usize = 64;
 
@@ -319,16 +319,16 @@ pub fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
         write_locals_file(state).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
     let (script_path, _script_guard) =
         write_block_file(inner).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
-    let exe = std::env::current_exe()?;
-    let mut child = Command::new(exe)
+    let mut child = build_self_command();
+    child
         .arg("--capture-worker")
         .arg("--script")
         .arg(script_path)
         .arg("--locals")
         .arg(locals_path)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+    let mut child = child.spawn()?;
 
     let mut stdout = Vec::new();
     if let Some(mut out) = child.stdout.take() {
