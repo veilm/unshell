@@ -21,6 +21,7 @@ Resolution order:
 4. `$HOME/.local/share/histfile`
 
 - The REPL appends new entries to the history file so multiple sessions can share the same file without clobbering each other's updates.
+- A REPL refresh carries its in-memory history into the new process. If the history file has been removed (for example, by temporary-file cleanup), the refreshed session can still navigate its earlier commands.
 
 ## Startup Sourcing
 
