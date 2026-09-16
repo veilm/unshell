@@ -1891,6 +1891,26 @@ fn build_editor(state: &ShellState) -> Result<Editor<ReplHelper, DefaultHistory>
     Ok(rl)
 }
 
+fn history_snapshot(rl: &Editor<ReplHelper, DefaultHistory>) -> Vec<String> {
+    rl.history().iter().cloned().collect()
+}
+
+fn load_history_with_fallback(
+    rl: &mut Editor<ReplHelper, DefaultHistory>,
+    path: Option<&PathBuf>,
+    fallback: Option<&[String]>,
+) {
+    if let Some(entries) = fallback {
+        for entry in entries {
+            let _ = rl.add_history_entry(entry.as_str());
+        }
+        return;
+    }
+    if let Some(path) = path {
+        let _ = rl.load_history(path);
+    }
+}
+
 fn apply_bindings(
     rl: &mut Editor<ReplHelper, DefaultHistory>,
     bindings: &[ReplBinding],
@@ -2038,9 +2058,8 @@ pub fn run_repl(state: &mut ShellState) {
         }
     };
 
-    if let Some(path) = history_path.as_ref() {
-        let _ = rl.load_history(path);
-    }
+    let restored_history = state.repl_history.take();
+    load_history_with_fallback(&mut rl, history_path.as_ref(), restored_history.as_deref());
 
     loop {
         let next_history_path = resolve_history_path(state);
@@ -2059,9 +2078,13 @@ pub fn run_repl(state: &mut ShellState) {
             last_generation = state.repl.generation;
             match build_editor(state) {
                 Ok(mut next) => {
-                    if let Some(path) = next_history_path.as_ref() {
-                        let _ = next.load_history(path);
-                    }
+                    let previous_history =
+                        (next_history_path == history_path).then(|| history_snapshot(&rl));
+                    load_history_with_fallback(
+                        &mut next,
+                        next_history_path.as_ref(),
+                        previous_history.as_deref(),
+                    );
                     if let Some(helper) = next.helper_mut() {
                         helper.update_completion_snapshot(collect_completion_snapshot(state));
                     }
@@ -2074,6 +2097,7 @@ pub fn run_repl(state: &mut ShellState) {
             }
         }
 
+        state.repl_history = Some(history_snapshot(&rl));
         if let Err(err) = maybe_auto_refresh_repl(state) {
             eprintln!("unshell: refresh failed: {err}");
         }
@@ -2091,6 +2115,7 @@ pub fn run_repl(state: &mut ShellState) {
                     if let Some(path) = history_path.as_ref() {
                         let _ = rl.append_history(path);
                     }
+                    state.repl_history = Some(history_snapshot(&rl));
                     if !run_after_command_hook(&line, state) {
                         break;
                     }

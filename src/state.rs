@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -69,6 +70,7 @@ pub struct ShellState {
     pub aliases: HashMap<String, AliasEntry>,
     pub options: ShellOptions,
     pub repl: ReplOptions,
+    pub repl_history: Option<Vec<String>>,
     pub interactive: bool,
     pub last_output_newline: bool,
     pub needs_cursor_check: bool,
@@ -101,6 +103,7 @@ impl ShellState {
                 history_file: None,
                 generation: 0,
             },
+            repl_history: None,
             interactive: false,
             last_output_newline: true,
             needs_cursor_check: false,
@@ -287,7 +290,7 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
 }
 
 const STATE_MAGIC: &[u8] = b"USHSTATE";
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 
 pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
     let (path, mut file) = create_temp_file("state")?;
@@ -398,6 +401,16 @@ pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFi
         }
         None => write_bool(&mut file, false)?,
     }
+    match state.repl_history.as_ref() {
+        Some(entries) => {
+            write_bool(&mut file, true)?;
+            write_u32(&mut file, entries.len() as u32)?;
+            for entry in entries {
+                write_string(&mut file, entry)?;
+            }
+        }
+        None => write_bool(&mut file, false)?,
+    }
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -413,7 +426,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         ));
     }
     let version = read_u32(&mut file)?;
-    if version != 1 && version != 2 && version != STATE_VERSION {
+    if version != 1 && version != 2 && version != 3 && version != STATE_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "state file version mismatch",
@@ -535,6 +548,14 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
             state.options.debug_log_path = Some(read_string(&mut file, "debug log path")?);
         }
     }
+    if version >= 4 && read_bool(&mut file)? {
+        let count = read_u32(&mut file)? as usize;
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(read_string(&mut file, "repl history entry")?);
+        }
+        state.repl_history = Some(entries);
+    }
 
     Ok(state)
 }
@@ -615,6 +636,7 @@ pub fn create_temp_file(prefix: &str) -> io::Result<(PathBuf, File)> {
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
+            .mode(0o600)
             .open(&path)
         {
             Ok(file) => return Ok((path, file)),
@@ -627,6 +649,38 @@ pub fn create_temp_file(prefix: &str) -> io::Result<(PathBuf, File)> {
         io::ErrorKind::AlreadyExists,
         "failed to create temp file",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ShellState, read_shell_state_file, write_shell_state_file};
+    use std::fs::OpenOptions;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn refresh_state_preserves_history_in_private_file() {
+        let mut state = ShellState::new();
+        state.repl_history = Some(vec!["echo first".into(), "echo second\nline".into()]);
+        let (path, _guard) = write_shell_state_file(&state).unwrap();
+
+        assert_eq!(
+            read_shell_state_file(&path).unwrap().repl_history,
+            state.repl_history
+        );
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn refresh_state_accepts_previous_version_without_history() {
+        let (path, _guard) = write_shell_state_file(&ShellState::new()).unwrap();
+        let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(8)).unwrap();
+        file.write_all(&3u32.to_le_bytes()).unwrap();
+        file.set_len(file.metadata().unwrap().len() - 1).unwrap();
+
+        assert!(read_shell_state_file(&path).unwrap().repl_history.is_none());
+    }
 }
 
 fn write_u32<W: Write>(writer: &mut W, value: u32) -> io::Result<()> {

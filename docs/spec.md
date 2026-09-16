@@ -413,7 +413,7 @@ USH_COMP_CWORD=2
 - If that handler prints `["src/main.rs","src/repl.rs","tests/integration.rs"]`, unshell filters by the `sr` fragment and shows the remaining matches in the usual completion UI.
 - **V1 exclusions:** handler-specific fixed args, shell-function completers, static in-config candidate lists, fallback/merge modes with file completion, alias-aware matching, and prefix/longest-prefix rule resolution.
 - If a function named `unshell_after_command_input` is defined, the REPL invokes it after history is updated and before the command executes, passing the raw line as `$1`.
-- `refresh-repl` re-execs into a new `ush` binary, preserving shell state (vars, aliases, functions, repl settings) without re-sourcing startup files.
+- `refresh-repl` re-execs into a new `ush` binary, preserving shell state (vars, aliases, functions, repl settings, in-memory history) without re-sourcing startup files.
 - If the running executable has been replaced/removed (e.g., after `install.sh`), the REPL auto-refreshes before rendering the next prompt and prints a one-line notice.
 
 - **Current implementation:**
