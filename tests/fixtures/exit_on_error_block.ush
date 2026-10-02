@@ -1,0 +1,3 @@
+set execution.exit_on_error true
+if true { false; echo unreachable }
+echo unreachable

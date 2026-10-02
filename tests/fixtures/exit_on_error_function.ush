@@ -1,0 +1,4 @@
+set execution.exit_on_error true
+def fail { sh -c "exit 8"; echo unreachable }
+fail
+echo unreachable

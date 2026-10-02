@@ -1,0 +1,1 @@
+unshell: set: execution.exit_on_error expects 'true' or 'false'

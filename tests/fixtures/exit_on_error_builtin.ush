@@ -1,0 +1,3 @@
+set execution.exit_on_error true
+set execution.exit_on_error invalid; echo unreachable
+echo unreachable

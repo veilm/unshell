@@ -1,0 +1,3 @@
+set execution.exit_on_error true
+source tests/fixtures/exit_on_error_basic.ush
+echo unreachable

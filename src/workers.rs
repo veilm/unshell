@@ -55,7 +55,11 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
                 FlowControl::Return(_) => return Err("return not allowed in foreach".into()),
                 FlowControl::Break => break,
                 FlowControl::Continue => continue,
-                FlowControl::Exit | FlowControl::None => {}
+                FlowControl::Exit => {
+                    exit_requested = true;
+                    break;
+                }
+                FlowControl::None => {}
             }
         } else {
             let mut ctx = ScriptContext {
@@ -82,7 +86,7 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
         .map_err(|err| format!("failed to flush foreach output: {err}"))?;
 
     if exit_requested {
-        std::process::exit(0);
+        std::process::exit(state.last_status);
     }
 
     Ok(())
@@ -100,6 +104,7 @@ pub fn run_capture_worker(args: &[String]) -> Result<(), String> {
         state: &mut state,
     };
     match ctx.execute_with_exit()? {
+        FlowControl::Exit if state.options.exit_on_error => std::process::exit(state.last_status),
         FlowControl::Exit => return Err("exit not allowed in capture".into()),
         FlowControl::Return(_) => return Err("return not allowed in capture".into()),
         FlowControl::Break => return Err("break not allowed in capture".into()),
@@ -334,7 +339,10 @@ pub fn run_capture(body: &str, state: &ShellState) -> io::Result<String> {
     if let Some(mut out) = child.stdout.take() {
         out.read_to_end(&mut stdout)?;
     }
-    let _status = child.wait()?;
+    let status = child.wait()?;
+    if state.options.exit_on_error && !status.success() {
+        return Err(io::Error::other(format!("command exited with {status}")));
+    }
     trim_capture_output(stdout, state.options.subshells_trim_newline)
 }
 

@@ -1,0 +1,10 @@
+set execution.exit_on_error true
+false || echo recovered
+false && echo skipped
+if false { echo skipped } else { echo alternate }
+while false { echo skipped }
+def probe { false; echo tested }
+if probe { echo condition }
+probe || echo skipped
+false | true
+echo done
