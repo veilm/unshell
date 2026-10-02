@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -41,9 +43,27 @@ pub fn run_foreach_worker(args: &[String]) -> Result<(), String> {
     let block = read_block_file(&opts.block_path)
         .map_err(|err| format!("failed to load foreach block: {err}"))?;
 
-    let stdin = io::stdin();
+    // Keep the record stream private: body commands must not drain it through
+    // inherited stdin. CLOEXEC also prevents leaking the reader to descendants.
+    let input_fd = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    if input_fd < 0 {
+        return Err(format!(
+            "failed to duplicate foreach input: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let input = unsafe { File::from_raw_fd(input_fd) };
+    let null = File::open("/dev/null")
+        .map_err(|err| format!("failed to open foreach body stdin: {err}"))?;
+    if unsafe { libc::dup2(null.as_raw_fd(), libc::STDIN_FILENO) } < 0 {
+        return Err(format!(
+            "failed to isolate foreach input: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    drop(null);
     let mut stdout = io::stdout();
-    let reader = BufReader::new(stdin.lock());
+    let reader = BufReader::new(input);
     let mut exit_requested = false;
 
     for line in reader.lines() {

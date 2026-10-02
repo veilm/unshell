@@ -1,0 +1,15 @@
+alias each foreach
+def indented
+	seq 6000 | each line
+		cat > /dev/null
+		printf '%s\n' $line
+indented | wc -l
+seq 6000 | foreach line { cat > /dev/null; printf '%s\n' $line } | wc -l
+printf '%s\n' outer-a outer-b | each line
+	printf '%s\n' inner-a inner-b | each inner
+		cat > /dev/null
+		printf '%s:%s\n' $line $inner
+printf '%s\n' a b | each line
+	echo [cat]
+	printf '%s\n' $line | cat
+	cat < tests/fixtures/foreach_block.stdout
