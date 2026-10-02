@@ -1,0 +1,3 @@
+set execution.exit_on_error true
+printf "a\nb\n" | foreach x { false; echo unreachable }
+echo unreachable

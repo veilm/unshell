@@ -703,36 +703,80 @@ pub(crate) fn process_line(line: &str, state: &mut ShellState) -> bool {
     }
 }
 
+fn exit_on_error(state: &ShellState) -> bool {
+    state.options.exit_on_error && state.error_check_depth == 0 && state.last_status != 0
+}
+
+// A tested command suppresses error exits throughout functions, source, and eval.
+fn checked_segment(
+    state: &mut ShellState,
+    tested: bool,
+    run: impl FnOnce(&mut ShellState) -> Result<FlowControl, String>,
+) -> FlowControl {
+    if tested {
+        state.error_check_depth += 1;
+    }
+    let result = run(state);
+    if tested {
+        state.error_check_depth -= 1;
+    }
+    let flow = match result {
+        Ok(flow) => flow,
+        Err(err) => {
+            eprintln!("unshell: {err}");
+            state.last_status = 1;
+            FlowControl::None
+        }
+    };
+    if flow == FlowControl::None && !tested && exit_on_error(state) {
+        FlowControl::Exit
+    } else {
+        flow
+    }
+}
+
 fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return FlowControl::None;
     }
-
     let tokens = match raw_line_tokens(trimmed, state) {
         Ok(tokens) => tokens,
         Err(err) => {
             eprintln!("unshell: {err}");
             state.last_status = 1;
-            return FlowControl::None;
+            return if exit_on_error(state) {
+                FlowControl::Exit
+            } else {
+                FlowControl::None
+            };
         }
     };
+    execute_token_chains(&tokens, state, true)
+}
 
-    let sequences = split_tokens_on_semicolons(&tokens);
-    for sequence in sequences {
+fn run_expanded_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<FlowControl, String> {
+    Ok(execute_token_chains(tokens, state, false))
+}
+
+fn execute_token_chains(tokens: &[OpToken], state: &mut ShellState, expand: bool) -> FlowControl {
+    for sequence in split_tokens_on_semicolons(tokens) {
         if sequence.is_empty() {
             continue;
         }
         let chain = match split_tokens_on_and_or(&sequence) {
             Ok(chain) => chain,
             Err(err) => {
-                eprintln!("unshell: {err}");
-                state.last_status = 1;
+                let flow = checked_segment(state, false, |_| Err(err));
+                if flow != FlowControl::None {
+                    return flow;
+                }
                 continue;
             }
         };
+        let chain_len = chain.len();
         let mut last_success = true;
-        for (op, segment) in chain {
+        for (index, (op, segment)) in chain.into_iter().enumerate() {
             if segment.is_empty() {
                 continue;
             }
@@ -741,61 +785,27 @@ fn process_line_raw(line: &str, state: &mut ShellState) -> FlowControl {
                 LogicOp::Or if last_success => continue,
                 _ => {}
             }
-            let expanded = match expand_op_tokens(&segment, state) {
-                Ok(tokens) => tokens,
-                Err(err) => {
-                    eprintln!("unshell: {err}");
-                    last_success = false;
-                    state.last_status = 1;
-                    continue;
+            let flow = checked_segment(state, index + 1 < chain_len, |state| {
+                if expand {
+                    let expanded = expand_op_tokens(&segment, state)?;
+                    run_expanded_tokens(&expanded, state)
+                } else {
+                    match run_pipeline_tokens(&segment, state)? {
+                        RunResult::Exit => Ok(FlowControl::Exit),
+                        RunResult::Return(code) => Ok(FlowControl::Return(code)),
+                        RunResult::Break => Ok(FlowControl::Break),
+                        RunResult::Continue => Ok(FlowControl::Continue),
+                        RunResult::Success(_) => Ok(FlowControl::None),
+                    }
                 }
-            };
-            match run_expanded_tokens(&expanded, state) {
-                Ok(FlowControl::Exit) => return FlowControl::Exit,
-                Ok(FlowControl::Return(code)) => return FlowControl::Return(code),
-                Ok(FlowControl::Break) => return FlowControl::Break,
-                Ok(FlowControl::Continue) => return FlowControl::Continue,
-                Ok(FlowControl::None) => {
-                    last_success = state.last_status == 0;
-                }
-                Err(err) => {
-                    eprintln!("unshell: {err}");
-                    last_success = false;
-                    state.last_status = 1;
-                }
+            });
+            if flow != FlowControl::None {
+                return flow;
             }
+            last_success = state.last_status == 0;
         }
     }
     FlowControl::None
-}
-
-fn run_expanded_tokens(tokens: &[OpToken], state: &mut ShellState) -> Result<FlowControl, String> {
-    let sequences = split_tokens_on_semicolons(tokens);
-    for sequence in sequences {
-        if sequence.is_empty() {
-            continue;
-        }
-        let chain = split_tokens_on_and_or(&sequence)?;
-        let mut last_success = true;
-        for (op, segment) in chain {
-            if segment.is_empty() {
-                continue;
-            }
-            match op {
-                LogicOp::And if !last_success => continue,
-                LogicOp::Or if last_success => continue,
-                _ => {}
-            }
-            match run_pipeline_tokens(&segment, state)? {
-                RunResult::Exit => return Ok(FlowControl::Exit),
-                RunResult::Return(code) => return Ok(FlowControl::Return(code)),
-                RunResult::Break => return Ok(FlowControl::Break),
-                RunResult::Continue => return Ok(FlowControl::Continue),
-                RunResult::Success(success) => last_success = success,
-            }
-        }
-    }
-    Ok(FlowControl::None)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2011,6 +2021,22 @@ fn run_builtin_inner(args: &[String], state: &mut ShellState) -> Result<Option<R
             }
             let key = &args[1];
             match key.as_str() {
+                "execution.exit_on_error" => {
+                    if args.len() != 3 {
+                        return Err("set: execution.exit_on_error expects a value".into());
+                    }
+                    state.options.exit_on_error = match args[2].as_str() {
+                        "true" => true,
+                        "false" => false,
+                        _ => {
+                            return Err(
+                                "set: execution.exit_on_error expects 'true' or 'false'".into()
+                            );
+                        }
+                    };
+                    state.last_status = 0;
+                    Ok(Some(RunResult::Success(true)))
+                }
                 "aliases.recursive" => {
                     if args.len() != 3 {
                         return Err("set: aliases.recursive expects a value".into());
@@ -3236,6 +3262,7 @@ pub(crate) fn execute_inline_block(
         return Ok(FlowControl::None);
     }
     match process_line_raw(trimmed, state) {
+        FlowControl::Exit if state.options.exit_on_error => Ok(FlowControl::Exit),
         FlowControl::Exit => Err("exit not allowed in inline block".into()),
         FlowControl::Return(code) => Ok(FlowControl::Return(code)),
         FlowControl::Break => Ok(FlowControl::Break),
@@ -3391,7 +3418,12 @@ impl<'a> ScriptContext<'a> {
                                 });
                             }
                             FlowControl::None => {}
-                            FlowControl::Exit => {}
+                            FlowControl::Exit => {
+                                return Ok(BlockResult {
+                                    next: idx + 1,
+                                    flow: FlowControl::Exit,
+                                });
+                            }
                         }
                     }
                     let (exit, next_idx, handled) = self.handle_else_chain_tail(
@@ -3586,7 +3618,8 @@ impl<'a> ScriptContext<'a> {
                                     result.last_signal,
                                     self.state.last_status,
                                     io::stdin().is_terminal(),
-                                ) {
+                                ) || exit_on_error(self.state)
+                                {
                                     return Ok(BlockResult {
                                         next: idx + 1,
                                         flow: FlowControl::Exit,
@@ -3613,7 +3646,12 @@ impl<'a> ScriptContext<'a> {
                                         });
                                     }
                                     FlowControl::None => {}
-                                    FlowControl::Exit => {}
+                                    FlowControl::Exit => {
+                                        return Ok(BlockResult {
+                                            next: idx + 1,
+                                            flow: FlowControl::Exit,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -3693,7 +3731,8 @@ impl<'a> ScriptContext<'a> {
                                     result.last_signal,
                                     self.state.last_status,
                                     io::stdin().is_terminal(),
-                                ) {
+                                ) || exit_on_error(self.state)
+                                {
                                     return Ok(BlockResult {
                                         next: end_idx + 1,
                                         flow: FlowControl::Exit,
@@ -3740,7 +3779,8 @@ impl<'a> ScriptContext<'a> {
                             result.last_signal,
                             self.state.last_status,
                             io::stdin().is_terminal(),
-                        ) {
+                        ) || exit_on_error(self.state)
+                        {
                             return Ok(BlockResult {
                                 next: idx + 1,
                                 flow: FlowControl::Exit,
@@ -3775,7 +3815,8 @@ impl<'a> ScriptContext<'a> {
                             result.last_signal,
                             self.state.last_status,
                             io::stdin().is_terminal(),
-                        ) {
+                        ) || exit_on_error(self.state)
+                        {
                             return Ok(BlockResult {
                                 next: end_idx + 1,
                                 flow: FlowControl::Exit,
@@ -3811,7 +3852,8 @@ impl<'a> ScriptContext<'a> {
                         result.last_signal,
                         self.state.last_status,
                         io::stdin().is_terminal(),
-                    ) {
+                    ) || exit_on_error(self.state)
+                    {
                         return Ok(BlockResult {
                             next: block_end,
                             flow: FlowControl::Exit,
@@ -3882,7 +3924,12 @@ impl<'a> ScriptContext<'a> {
                                 FlowControl::Break => break,
                                 FlowControl::Continue => continue,
                                 FlowControl::None => {}
-                                FlowControl::Exit => {}
+                                FlowControl::Exit => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
                             }
                         }
                     }
@@ -4056,7 +4103,12 @@ impl<'a> ScriptContext<'a> {
                                 FlowControl::Break => break,
                                 FlowControl::Continue => continue,
                                 FlowControl::None => {}
-                                FlowControl::Exit => {}
+                                FlowControl::Exit => {
+                                    return Ok(BlockResult {
+                                        next: idx + 1,
+                                        flow: FlowControl::Exit,
+                                    });
+                                }
                             }
                         }
                     }
@@ -4297,7 +4349,7 @@ impl<'a> ScriptContext<'a> {
                         return Ok((FlowControl::Continue, block_start + 1, true));
                     }
                     FlowControl::None => {}
-                    FlowControl::Exit => {}
+                    FlowControl::Exit => return Ok((FlowControl::Exit, block_start + 1, true)),
                 }
                 if let Some(tail) = brace_inline_tail {
                     let (exit, next_idx, _) =
@@ -4377,6 +4429,13 @@ impl<'a> ScriptContext<'a> {
     }
 
     fn evaluate_condition(&mut self, command: &str) -> Result<RunResult, String> {
+        self.state.error_check_depth += 1;
+        let result = self.evaluate_condition_inner(command);
+        self.state.error_check_depth -= 1;
+        result
+    }
+
+    fn evaluate_condition_inner(&mut self, command: &str) -> Result<RunResult, String> {
         if command.trim().is_empty() {
             return Ok(RunResult::Success(false));
         }

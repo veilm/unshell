@@ -131,3 +131,9 @@ open a GitHub issue or ping me on twitter. I'd be happy to answer any possible q
 ## license
 
 MIT
+
+Exit on error can be enabled in a script with `set execution.exit_on_error true`
+and disabled with `set execution.exit_on_error false` (the default). Unhandled
+failures stop execution; conditions and tested `&&`/`||` commands are exempt.
+Pipelines use their final stage's status. See [the specification](docs/spec.md#exit-on-error)
+for function, block, and capture behavior.

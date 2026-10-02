@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[derive(Clone)]
 pub struct ShellOptions {
     pub aliases_recursive: bool,
+    pub exit_on_error: bool,
     pub subshells_trim_newline: bool,
     pub expansions_chars: HashSet<char>,
     pub expansions_handler: Vec<String>,
@@ -77,6 +78,7 @@ pub struct ShellState {
     pub positional: Vec<String>,
     pub positional_stack: Vec<Vec<String>>,
     pub last_status: i32,
+    pub error_check_depth: u32,
 }
 
 impl ShellState {
@@ -88,6 +90,7 @@ impl ShellState {
             aliases: HashMap::new(),
             options: ShellOptions {
                 aliases_recursive: true,
+                exit_on_error: false,
                 subshells_trim_newline: true,
                 expansions_chars: HashSet::new(),
                 expansions_handler: Vec::new(),
@@ -110,6 +113,7 @@ impl ShellState {
             positional: Vec::new(),
             positional_stack: Vec::new(),
             last_status: 0,
+            error_check_depth: 0,
         }
     }
 
@@ -214,6 +218,8 @@ pub fn write_locals_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGua
     }
     write_i32(&mut file, state.last_status)?;
     write_bool(&mut file, state.interactive)?;
+    write_bool(&mut file, state.options.exit_on_error)?;
+    write_u32(&mut file, state.error_check_depth)?;
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -286,11 +292,20 @@ pub fn read_locals_file(path: &Path) -> io::Result<ShellState> {
     }
     state.last_status = read_i32(&mut file)?;
     state.interactive = read_bool(&mut file)?;
+    // Older running shells may start a worker using the newly installed binary.
+    match read_bool(&mut file) {
+        Ok(enabled) => {
+            state.options.exit_on_error = enabled;
+            state.error_check_depth = read_u32(&mut file)?;
+        }
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {}
+        Err(err) => return Err(err),
+    }
     Ok(state)
 }
 
 const STATE_MAGIC: &[u8] = b"USHSTATE";
-const STATE_VERSION: u32 = 4;
+const STATE_VERSION: u32 = 5;
 
 pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFileGuard)> {
     let (path, mut file) = create_temp_file("state")?;
@@ -411,6 +426,7 @@ pub fn write_shell_state_file(state: &ShellState) -> io::Result<(PathBuf, TempFi
         }
         None => write_bool(&mut file, false)?,
     }
+    write_bool(&mut file, state.options.exit_on_error)?;
     file.flush()?;
     Ok((path.clone(), TempFileGuard::new(path)))
 }
@@ -426,7 +442,7 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         ));
     }
     let version = read_u32(&mut file)?;
-    if version != 1 && version != 2 && version != 3 && version != STATE_VERSION {
+    if version != 1 && version != 2 && version != 3 && version != 4 && version != STATE_VERSION {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "state file version mismatch",
@@ -557,6 +573,9 @@ pub fn read_shell_state_file(path: &Path) -> io::Result<ShellState> {
         state.repl_history = Some(entries);
     }
 
+    if version >= 5 {
+        state.options.exit_on_error = read_bool(&mut file)?;
+    }
     Ok(state)
 }
 
@@ -659,6 +678,29 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn error_mode_survives_worker_and_refresh_state() {
+        let mut state = ShellState::new();
+        state.options.exit_on_error = true;
+        state.error_check_depth = 2;
+        let (path, _guard) = super::write_locals_file(&state).unwrap();
+        let restored = super::read_locals_file(&path).unwrap();
+        assert!(restored.options.exit_on_error);
+        assert_eq!(restored.error_check_depth, 2);
+        let (path, _guard) = write_shell_state_file(&state).unwrap();
+        assert!(read_shell_state_file(&path).unwrap().options.exit_on_error);
+    }
+
+    #[test]
+    fn worker_state_accepts_previous_format() {
+        let (path, _guard) = super::write_locals_file(&ShellState::new()).unwrap();
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(file.metadata().unwrap().len() - 5).unwrap();
+        let restored = super::read_locals_file(&path).unwrap();
+        assert!(!restored.options.exit_on_error);
+        assert_eq!(restored.error_check_depth, 0);
+    }
+
+    #[test]
     fn refresh_state_preserves_history_in_private_file() {
         let mut state = ShellState::new();
         state.repl_history = Some(vec!["echo first".into(), "echo second\nline".into()]);
@@ -677,7 +719,7 @@ mod tests {
         let mut file = OpenOptions::new().write(true).open(&path).unwrap();
         file.seek(SeekFrom::Start(8)).unwrap();
         file.write_all(&3u32.to_le_bytes()).unwrap();
-        file.set_len(file.metadata().unwrap().len() - 1).unwrap();
+        file.set_len(file.metadata().unwrap().len() - 2).unwrap();
 
         assert!(read_shell_state_file(&path).unwrap().repl_history.is_none());
     }

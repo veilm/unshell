@@ -1,0 +1,4 @@
+echo before
+set execution.exit_on_error true
+sh -c "exit 7"; echo unreachable
+echo unreachable

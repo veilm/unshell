@@ -11,6 +11,7 @@ struct Fixture {
     script: PathBuf,
     stdout: String,
     stderr: String,
+    status: Option<i32>,
 }
 
 #[test]
@@ -21,6 +22,15 @@ fn run_all_fixtures() {
             .arg(&fixture.script)
             .output()
             .expect("failed to run ush");
+
+        if let Some(status) = fixture.status {
+            assert_eq!(
+                output.status.code(),
+                Some(status),
+                "exit status for {}",
+                fixture.name
+            );
+        }
 
         let actual_stdout = String::from_utf8(output.stdout).expect("stdout not UTF-8");
         let actual_stderr = String::from_utf8(output.stderr).expect("stderr not UTF-8");
@@ -61,9 +71,12 @@ fn load_fixtures() -> std::io::Result<Vec<Fixture>> {
 
         fixtures.push(Fixture {
             name,
-            script: path,
+            script: path.clone(),
             stdout,
             stderr,
+            status: fs::read_to_string(path.with_extension("status"))
+                .ok()
+                .map(|s| s.trim().parse().expect("fixture status")),
         });
     }
 

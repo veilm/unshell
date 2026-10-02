@@ -348,6 +348,34 @@ set debug.log /tmp/ush-debug.log
   - `debug.log PATH` enables debug logging to the given file; `debug.log off` disables it.
   - Logs include command start/exit, alias expansion, function bodies, and `source` activity.
 
+### Exit on Error
+
+`set execution.exit_on_error true` enables exit-on-error; `false` disables it.
+The default is `false`. This follows the existing dotted `set KEY VALUE`
+convention rather than adding POSIX `set -e` syntax.
+
+- An unhandled nonzero command status stops the current shell with that status,
+  including inside functions, `source`, `eval`, and inline or multiline blocks.
+  Expansion and builtin errors stop execution with status 1.
+- `if`/`elif` and `while` conditions, and every non-final command in an `&&`/`||`
+  chain, suppress error exits throughout the tested command (including function
+  bodies). A skipped final command does not cause an exit. The executed final
+  command remains subject to exit-on-error.
+- Pipelines use the final stage's status; this setting does not enable `pipefail`.
+  Pipeline workers inherit the setting and stop their own execution on failure.
+- Captures inherit the setting. A failed capture aborts the containing command
+  with a diagnostic and status 1; its output is not used. A condition or tested
+  command still suppresses the parent shell's exit.
+- The setting survives REPL refresh and applies in interactive shells too.
+  Enable it inside scripts when failures should not close an interactive shell.
+
+```bash
+set execution.exit_on_error true
+cp input.txt backup.txt       # failure stops here
+optional_command || echo "optional command failed"
+set execution.exit_on_error false
+```
+
 ### REPL (Optional)
 - The interactive prompt is provided by Rustyline when built with the default `repl` feature.
 - Vi mode is the default editing mode.
@@ -453,6 +481,5 @@ ush --restore /tmp/ush-state  # internal: restore repl state without sourcing rc
 ```
 
 ## Ambiguities / Open Questions
-- **Error handling mode:** Should non-zero exit codes inside pipelines or blocks abort the script (akin to `set -e`) or only fail the current step?
 - **Else/loop semantics:** What syntax/behavior should `else`, `elif`, `for`, and `foreach` follow (indentation vs braces priorities, variable scoping, etc.)?
 - **REPL completion testing:** Do we want a harness for automated REPL completion behavior (fzf/list modes), or accept unit-level coverage only?
