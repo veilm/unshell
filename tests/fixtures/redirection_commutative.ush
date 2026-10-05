@@ -1,0 +1,53 @@
+echo hi o+e>o | cat
+echo hi e+o>o | cat
+
+def emit { printf 'out\n'; printf 'err\n' o>e }
+
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e>o | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e>e | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e>n
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e>>null
+emit o+e>o | cat
+emit o+e>e | cat
+emit o+e>n
+emit o+e>>null
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o>o | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o>e | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o>n
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o>>null
+emit e+o>o | cat
+emit e+o>e | cat
+emit e+o>n
+emit e+o>>null
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err>o | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err>e | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err>n
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err>>null
+emit out+err>o | cat
+emit out+err>e | cat
+emit out+err>n
+emit out+err>>null
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out>o | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out>e | cat
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out>n
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out>>null
+emit err+out>o | cat
+emit err+out>e | cat
+emit err+out>n
+emit err+out>>null
+
+base=[mktemp -d]
+
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e> $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' o+e>> $base/merged
+cat $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o> $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' e+o>> $base/merged
+cat $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err> $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' out+err>> $base/merged
+cat $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out> $base/merged
+python3 -u -c 'import sys; print("out"); print("err", file=sys.stderr)' err+out>> $base/merged
+cat $base/merged
+rm -rf $base

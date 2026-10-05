@@ -1295,8 +1295,8 @@ fn parse_output_redirection(
         "out>>" | "o>>" => (OutputStream::Stdout, true),
         "err>" | "e>" => (OutputStream::Stderr, false),
         "err>>" | "e>>" => (OutputStream::Stderr, true),
-        "out+err>" | "o+e>" => (OutputStream::Both, false),
-        "out+err>>" | "o+e>>" => (OutputStream::Both, true),
+        "out+err>" | "err+out>" | "o+e>" | "e+o>" => (OutputStream::Both, false),
+        "out+err>>" | "err+out>>" | "o+e>>" | "e+o>>" => (OutputStream::Both, true),
         _ => return Ok(None),
     };
 
@@ -1324,8 +1324,12 @@ fn parse_output_with_inline_target(value: &str) -> Result<Option<(OutputSpec, us
     let prefixes = [
         ("out+err>>", OutputStream::Both, true),
         ("out+err>", OutputStream::Both, false),
+        ("err+out>>", OutputStream::Both, true),
+        ("err+out>", OutputStream::Both, false),
         ("o+e>>", OutputStream::Both, true),
         ("o+e>", OutputStream::Both, false),
+        ("e+o>>", OutputStream::Both, true),
+        ("e+o>", OutputStream::Both, false),
         ("out>>", OutputStream::Stdout, true),
         ("out>", OutputStream::Stdout, false),
         ("o>>", OutputStream::Stdout, true),
