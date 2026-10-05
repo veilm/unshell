@@ -37,10 +37,10 @@ list_c | grep c
 
 #### Output and Error Streams
 - `>` and `>>` redirect stdout to a file (overwrite vs. append). The operator must be a separate token: `echo hi > out.log` is valid, `echo hi >out.log` is a parse error.
-- `out>`, `err>`, `o>`, `e>` redirect stdout/stderr to a destination. `out+err>` and `o+e>` merge stdout and stderr.
+- `out>`, `err>`, `o>`, `e>` redirect stdout/stderr to a destination. `out+err>` / `err+out>` and `o+e>` / `e+o>` merge stdout and stderr. The order around `+` does not matter, including with `>>` for append mode.
 - Stream destinations are written without whitespace and are reserved keywords:
-  - `out>err`, `err>out`, `out+err>out`, `out+err>err`
-  - `o>e`, `e>o`, `o+e>o`, `o+e>e`
+  - `out>err`, `err>out`, `out+err>out`, `out+err>err`, `err+out>out`, `err+out>err`
+  - `o>e`, `e>o`, `o+e>o`, `o+e>e`, `e+o>o`, `e+o>e`
 - `null` or `n` as an attached destination sends output to `/dev/null` (e.g., `out>null`, `e>n`).
 - If whitespace separates the destination, it is treated as a literal path (e.g., `out> err` writes to a file named `err`).
 
