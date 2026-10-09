@@ -43,6 +43,7 @@ list_c | grep c
   - `o>e`, `e>o`, `o+e>o`, `o+e>e`, `e+o>o`, `e+o>e`
 - `null` or `n` as an attached destination sends output to `/dev/null` (e.g., `out>null`, `e>n`).
 - If whitespace separates the destination, it is treated as a literal path (e.g., `out> err` writes to a file named `err`).
+- Bash/POSIX fd-style redirections (`2>&1`, `>&2`, `2>`, `2>/dev/null`, `&>`, `0<`, ...) are not supported. They are a parse error whose message names the unshell equivalent (e.g., `2>&1` suggests `err>out`; `> FILE 2>&1` suggests `out+err> FILE`).
 
 - Multiple redirections are allowed.
 - If the same stream is redirected more than once, the last redirection wins.

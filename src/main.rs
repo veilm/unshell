@@ -1237,6 +1237,12 @@ fn parse_redirections(tokens: Vec<WordToken>) -> Result<(Vec<String>, Redirectio
             continue;
         }
 
+        if let Some(hint) =
+            posix_redirection_hint(&token.value, tokens.get(idx + 1), redirs.stdout.as_ref())
+        {
+            return Err(hint);
+        }
+
         if let Some((out_redir, consumed)) = parse_output_redirection(&tokens, idx)? {
             apply_output_redirection(&mut redirs, out_redir);
             idx += consumed;
@@ -1258,6 +1264,96 @@ fn parse_redirections(tokens: Vec<WordToken>) -> Result<(Vec<String>, Redirectio
     }
 
     Ok((args, redirs))
+}
+
+/// Detects bash/POSIX fd-style redirections (`2>&1`, `>&2`, `2>`, `&>`, ...) and
+/// returns an error pointing at the unshell equivalent.
+fn posix_redirection_hint(
+    value: &str,
+    next: Option<&WordToken>,
+    stdout: Option<&OutputRedir>,
+) -> Option<String> {
+    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
+    let (fd, rest) = value.split_at(digits);
+    let (both, rest) = match rest.strip_prefix('&') {
+        Some(rest) if digits == 0 => (true, rest),
+        _ => (false, rest),
+    };
+    let (op, rest) = if let Some(rest) = rest.strip_prefix(">>") {
+        (">>", rest)
+    } else if let Some(rest) = rest.strip_prefix('>') {
+        (">", rest)
+    } else if let Some(rest) = rest.strip_prefix('<') {
+        ("<", rest)
+    } else {
+        return None;
+    };
+    let (dup, rest) = match rest.strip_prefix('&') {
+        Some(rest) => (true, rest),
+        None => (false, rest),
+    };
+    if digits == 0 && !both && !dup {
+        return None;
+    }
+
+    let both = both
+        || (dup
+            && fd.is_empty()
+            && !rest.is_empty()
+            && !rest.bytes().all(|b| b.is_ascii_digit() || b == b'-'));
+    let stream = match (both, fd) {
+        (true, _) => "out+err",
+        (false, "" | "1") if op != "<" => "out",
+        (false, "2") => "err",
+        _ => "",
+    };
+    let next_path = next
+        .filter(|_| rest.is_empty() && !dup)
+        .map(|t| t.value.as_str());
+    let target = match (dup, rest, next_path) {
+        (true, "1", _) if !both => "out".to_string(),
+        (true, "2", _) if !both => "err".to_string(),
+        (_, "/dev/null", _) | (false, "", Some("/dev/null")) => "null".to_string(),
+        (_, "", Some(path)) => format!(" {path}"),
+        (_, "", None) => " FILE".to_string(),
+        (_, path, _) if !path.bytes().all(|b| b.is_ascii_digit() || b == b'-') => {
+            format!(" {path}")
+        }
+        _ => String::new(),
+    };
+
+    let mut message =
+        format!("'{value}' is bash/POSIX redirection syntax, which unshell doesn't use");
+    // `> FILE 2>&1` sends both streams to FILE, but `err>out` targets the
+    // original stdout, so suggest merging both streams instead.
+    let merged = match stdout {
+        Some(redir) if stream == "err" && dup && rest == "1" => match &redir.target {
+            OutputTarget::File(path) if path != "/dev/null" => Some(format!(" {path}")),
+            OutputTarget::File(_) | OutputTarget::Null => Some("null".to_string()),
+            _ => None,
+        }
+        .map(|target| format!("out+err{}{target}", if redir.append { ">>" } else { ">" })),
+        _ => None,
+    };
+    if let Some(merged) = merged {
+        message.push_str(&format!(
+            "; replace the stdout redirection and this with {merged}"
+        ));
+    } else if op == "<" && matches!(fd, "" | "0") && !dup && !target.is_empty() {
+        message.push_str(&format!(
+            "; try <{}",
+            if target == "null" {
+                " /dev/null".to_string()
+            } else {
+                target
+            }
+        ));
+    } else if !stream.is_empty() && !target.is_empty() {
+        message.push_str(&format!("; try {stream}{op}{target}"));
+    } else {
+        message.push_str("; use e.g. err>out, out>err, err>null, out+err> FILE");
+    }
+    Some(message)
 }
 
 fn parse_input_redirection(

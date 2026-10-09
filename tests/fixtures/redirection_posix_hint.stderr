@@ -1,0 +1,9 @@
+unshell: '2>&1' is bash/POSIX redirection syntax, which unshell doesn't use; try err>out
+unshell: '>&2' is bash/POSIX redirection syntax, which unshell doesn't use; try out>err
+unshell: '2>/dev/null' is bash/POSIX redirection syntax, which unshell doesn't use; try err>null
+unshell: '2>' is bash/POSIX redirection syntax, which unshell doesn't use; try err> err.log
+unshell: '&>' is bash/POSIX redirection syntax, which unshell doesn't use; try out+err> both.log
+unshell: '2>&1' is bash/POSIX redirection syntax, which unshell doesn't use; replace the stdout redirection and this with out+err>null
+unshell: '2>&1' is bash/POSIX redirection syntax, which unshell doesn't use; replace the stdout redirection and this with out+err>> both.log
+unshell: '0<' is bash/POSIX redirection syntax, which unshell doesn't use; try < in.log
+unshell: '3>&1' is bash/POSIX redirection syntax, which unshell doesn't use; use e.g. err>out, out>err, err>null, out+err> FILE
