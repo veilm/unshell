@@ -1,0 +1,10 @@
+echo hi 2>&1
+echo hi >&2
+echo hi 2>/dev/null
+echo hi 2> err.log
+echo hi &> both.log
+echo hi > /dev/null 2>&1
+echo hi >> both.log 2>&1
+cat 0< in.log
+echo hi 3>&1
+echo ok
