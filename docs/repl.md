@@ -52,6 +52,7 @@ Resolution order:
 - Hidden entries (names starting with `.`) are excluded unless the completion fragment includes a `.` segment (for example `./`, `../`, or `.config`).
 - Before filesystem completion lists entries, it may pass the current unquoted fragment through the configured expansion handler. If the handler returns exactly one string, completion uses that string as the filesystem base. For example, with the default `~` expansion enabled, `~/<tab>` completes inside the expanded home directory and inserts expanded paths.
 - When completing inside quotes, the quoted fragment is used as the completion input.
+- Completions inserted outside quotes preserve literal backslashes, dollar signs, and quotes in filenames. Names needing literal quoting use single-quoted spans, with embedded apostrophes in double-quoted spans.
 - If the quote is still open, file completions close the quote and add a trailing space; directory completions keep the quote open.
 - Variable completion triggers when the fragment starts with `$`, using the current shell/environment variable names.
 - Command completion triggers in command position (first word of a pipeline segment) and looks at builtins, functions, aliases, and `$PATH`.

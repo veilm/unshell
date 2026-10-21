@@ -171,20 +171,20 @@ impl CompletionTrait for FuzzyCompleter {
 }
 
 fn quote_completion(value: &str) -> String {
+    // Single quotes preserve backslashes and dollars literally. Apostrophes
+    // are represented by a short double-quoted segment between literal spans.
+    if value.contains(['\\', '$', '\'', '"']) {
+        return format!("'{}'", value.replace('\'', "'\"'\"'"));
+    }
     if !value
         .chars()
-        .any(|ch| ch.is_whitespace() || ch == '[' || ch == ']')
+        .any(|ch| ch.is_whitespace() || "[]|;&(){}#".contains(ch))
     {
         return value.to_string();
     }
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
-    for ch in value.chars() {
-        if ch == '"' || ch == '\\' {
-            out.push('\\');
-        }
-        out.push(ch);
-    }
+    out.push_str(value);
     out.push('"');
     out
 }
@@ -1030,6 +1030,34 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         base.join(format!("unshell-repl-{nanos}"))
+    }
+
+    #[test]
+    fn completed_filenames_round_trip_through_shell_expansion() {
+        let names = [
+            r"2016 BTFOd_ 11\360\237\244\2412, 22-25-046.mkv",
+            r"trailing slash \",
+            r#"backslash\"quote.txt"#,
+            r"it's a \path.txt",
+            r#"both ' and " quotes.txt"#,
+            "$HOME [literal].txt",
+            "pipe|semicolon;name.txt",
+        ];
+        let dir = temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            fs::write(dir.join(name), b"").unwrap();
+        }
+        let prefix = format!("{}/", dir.display());
+        for mut candidate in list_dir_candidates(&prefix, false) {
+            let expected = candidate.replacement.clone();
+            super::finalize_completion(&mut candidate);
+            let tokens = crate::parser::parse_args(&candidate.replacement).unwrap();
+            let actual =
+                crate::expand::expand_tokens(tokens, &crate::state::ShellState::new()).unwrap();
+            assert_eq!(actual, vec![expected]);
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

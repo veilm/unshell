@@ -1,0 +1,5 @@
+printf '%s\n' '2016 BTFOd_ 11\360\237\244\2412, 22-25-046.mkv'
+printf '%s\n' 'trailing slash \'
+printf '%s\n' 'both '"'"' and " quotes.txt'
+printf '%s\n' 'it'"'"'s a \path.txt'
+printf '%s\n' '$HOME [literal].txt'

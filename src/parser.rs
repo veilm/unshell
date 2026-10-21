@@ -21,7 +21,7 @@ pub fn parse_args(line: &str) -> Result<Vec<String>, String> {
                 current.push(ch);
                 prev_was_space = false;
             }
-            '"' if bracket_depth == 0 && paren_depth == 0 && !in_double => {
+            '"' if bracket_depth == 0 && paren_depth == 0 && !in_double && !in_single => {
                 in_double = true;
                 current.push(ch);
                 prev_was_space = false;

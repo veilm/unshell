@@ -130,6 +130,7 @@ hash="sha256:[sha256sum Cargo.lock]"
 - The shell evaluates captures, trims the trailing newline, and splices the result directly into the string without introducing extra splitting.
 - `$var` expands to its full value without trimming.
 - **Single quotes** are fully literal: no `$var`, `$()`, or `$[]` expansion happens inside them.
+- Adjacent quoted spans concatenate into one argument, for example `'it'"'"'s a \\path'` preserves the apostrophe and backslashes literally. A double quote inside a single-quoted span is also literal.
 ```bash
 echo "hello $[echo world]" "$[pwd]"
 ```

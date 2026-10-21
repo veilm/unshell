@@ -165,18 +165,7 @@ fn expand_tokens_with_meta_inner(
             || token.contains('\'')
             || (!from_spread && token_has_expansion_sigil(&token));
         let allow_split = from_spread || token_contains_operator(&token);
-        let value = if token.starts_with('\'') && token.ends_with('\'') && token.len() >= 2 {
-            token[1..token.len() - 1].to_string()
-        } else if token.starts_with('"') && token.ends_with('"') && token.len() >= 2 {
-            let parts = expand_string_literal(&token[1..token.len() - 1], state)
-                .map_err(|err| format!("string expansion failed: {err}"))?;
-            if parts.len() != 1 {
-                return Err("string expansion produced multiple tokens".into());
-            }
-            parts[0].clone()
-        } else {
-            expand_token_with_quotes(&token, state)?
-        };
+        let value = expand_token_with_quotes(&token, state)?;
 
         if !protected && should_expand_with_handler(&value, state) {
             let replacements = run_expansion_handler(&value, state)?;
